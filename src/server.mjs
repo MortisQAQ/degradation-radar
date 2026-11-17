@@ -13,6 +13,10 @@ import { listProviders, runProbe } from './providers/index.mjs'
 import { PROBES, DEFAULT_PROBE_IDS } from './probes/index.mjs'
 import { gradeProbe } from './scoring/grade.mjs'
 import { createStore, computeSeries, RUBRIC_VERSION, PROBE_SET_VERSION } from './store.mjs'
+import { judgeSvgArtifact } from './judge/index.mjs'
+import { judgeConfig, judgeHealth } from './judge/vision.mjs'
+import { judgeProfile } from './judge/profile.mjs'
+import { computeVerdict } from './judge/verdict.mjs'
 
 const PORT = Number(process.env.RADAR_PORT ?? 7417)
 const CAPTURE_PORT = Number(process.env.RADAR_CAPTURE_PORT ?? 8899)
@@ -42,6 +46,48 @@ async function snapshotDir(dir) {
     /* missing dir = empty snapshot */
   }
   return out
+}
+
+/** Absolute file references the CLI put in its own answer. */
+function referencedFiles(text) {
+  const out = new Set()
+  if (!text) return []
+  // file:///C:/... and file:///home/... links
+  for (const m of text.matchAll(/file:\/\/\/([^\s)\]"'<>]+)/g)) {
+    try {
+      out.add(decodeURIComponent(m[1]))
+    } catch {
+      out.add(m[1])
+    }
+  }
+  // bare Windows paths that point at a plausible artifact
+  for (const m of text.matchAll(/\b([A-Za-z]:\\[^\s)\]"'<>|]+\.(?:svg|py|json|txt|md))\b/g)) {
+    out.add(m[1])
+  }
+  return [...out].slice(0, 8)
+}
+
+/**
+ * Some CLIs deliver by writing outside the workspace and linking the file.
+ * agy, for instance, drops artifacts in its own brain directory
+ * (~/.gemini/antigravity-cli/brain/<conversation>/). Treating that as "no
+ * delivery" scored a perfectly good pelican as a 0/100 degradation.
+ */
+async function harvestReferenced(text) {
+  const parts = []
+  const files = []
+  for (const ref of referencedFiles(text)) {
+    if (!/\.(svg|py|json|txt|md)$/i.test(ref)) continue
+    try {
+      const info = await stat(ref)
+      if (!info.isFile() || info.size > 512 * 1024) continue
+      parts.push(await readFileAsync(ref, 'utf8'))
+      files.push(ref)
+    } catch {
+      /* a broken link in prose is not an error */
+    }
+  }
+  return { text: parts.join('\n\n'), files }
 }
 
 /** Text of files created or rewritten during the probe. */
@@ -169,8 +215,11 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
 
       const capturedThisProbe = flows.slice(flowStart)
       const harvested = await harvestArtifacts(cwd, before)
-      // Grade what was delivered, inline or on disk — a file IS a delivery.
-      const delivered = harvested.text === '' ? result.text : `${result.text}\n\n${harvested.text}`
+      const linked = await harvestReferenced(result.text)
+      // Grade what was delivered: inline text, files written into the
+      // workspace, or files the CLI linked to elsewhere on disk.
+      const extra = [harvested.text, linked.text].filter((t) => t !== '').join('\n\n')
+      const delivered = extra === '' ? result.text : `${result.text}\n\n${extra}`
       const returnedModels = [
         ...new Set(
           capturedThisProbe
@@ -188,7 +237,11 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
 
       let artifactPath = null
       if (probe.kind === 'svg') {
-        const svg = /<svg/i.test(delivered) ? delivered.slice(delivered.search(/<svg/i)) : delivered
+        // Cut at the closing tag: everything after it is commentary, and a
+        // browser would happily paint that commentary into the screenshot.
+        const start = delivered.search(/<svg[\s>]/i)
+        const close = delivered.lastIndexOf('</svg>')
+        const svg = start < 0 ? delivered : close > start ? delivered.slice(start, close + 6) : delivered.slice(start)
         artifactPath = await store.saveArtifact(run.id, `${probeId}-${i}`, 'svg', svg)
       } else {
         artifactPath = await store.saveArtifact(run.id, `${probeId}-${i}`, 'txt', delivered)
@@ -200,7 +253,9 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         iteration: i,
         startedAt: new Date().toISOString(),
         text: result.text,
-        deliveredFiles: harvested.files.map((f) => f.slice(ROOT.length + 1).split('\\').join('/')),
+        deliveredFiles: [...harvested.files, ...linked.files].map((f) =>
+          f.startsWith(ROOT) ? f.slice(ROOT.length + 1).split('\\').join('/') : f.split('\\').join('/'),
+        ),
         grade,
         wireGrade,
         usage: result.usage ?? null,
@@ -224,7 +279,43 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
     }
   }
 
+  // ---- vision pass -------------------------------------------------------
+  // The rubric already answered "is this a well-formed drawing". Only the eyes
+  // can answer "is this a pelican riding a bicycle", and that is the question
+  // the whole dashboard exists for.
+  const judgeCfg = judgeConfig()
+  run.judge = judgeProfile(judgeCfg)
+  const health = await judgeHealth(judgeCfg)
+  if (!health.ok) {
+    run.judgeError = health.error ?? (health.hasModel === false ? `judge model ${judgeCfg.model} not offered by ${judgeCfg.baseUrl}` : `judge HTTP ${health.status}`)
+    broadcast({ type: 'judge-unavailable', runId: run.id, error: run.judgeError })
+  } else {
+    for (const record of run.probes) {
+      if (PROBES[record.probeId]?.kind !== 'svg' || !record.artifactPath) continue
+      let svgText = ''
+      try {
+        svgText = await readFileAsync(resolve(ROOT, record.artifactPath), 'utf8')
+      } catch {
+        record.vision = { ok: false, note: 'artifact unreadable' }
+        continue
+      }
+      record.vision = await judgeSvgArtifact({
+        artifactPath: resolve(ROOT, record.artifactPath),
+        svgText,
+        probeId: record.probeId,
+        config: judgeCfg,
+      })
+      broadcast({ type: 'judge-done', runId: run.id, probeId: record.probeId, iteration: record.iteration, vision: record.vision })
+    }
+  }
+
   run.summary = summarize(run)
+  // History must be read before this run is appended, so a run is never
+  // compared against itself.
+  run.verdict = computeVerdict(
+    run,
+    runs.filter((r) => r.provider === run.provider && r.model === run.model),
+  )
   run.status = 'done'
   run.finishedAt = new Date().toISOString()
   await store.append(run)
@@ -259,6 +350,7 @@ function summarize(run) {
   const latencies = list.map((p) => p.durationMs ?? 0)
   const routed = [...new Set(list.flatMap((p) => p.routedModels ?? []))]
   const requestedButNeverServed = run.model && !routed.includes(run.model)
+  const judged = list.filter((p) => p.vision?.ok === true && typeof p.vision.score === 'number')
   return {
     total: list.length,
     passed: pass,
@@ -273,6 +365,10 @@ function summarize(run) {
     // Runs that never reached the model must be excluded from rate maths:
     // including them turns an expired login into a "100% degradation" event.
     infraBlocked: list.filter((p) => p.grade?.metrics?.infra === true).length,
+    // Vision is the headline number for the pelican probes; null means "nobody
+    // looked", which is different from "it scored zero".
+    visionJudged: judged.length,
+    avgVisionScore: judged.length === 0 ? null : Math.round(judged.reduce((a, p) => a + p.vision.score, 0) / judged.length),
   }
 }
 
@@ -399,6 +495,10 @@ const server = http.createServer(async (req, res) => {
 
     if (path === '/api/series') {
       return json(res, 200, { services: computeSeries(runs) })
+    }
+
+    if (path === '/api/judge/health') {
+      return json(res, 200, { config: judgeConfig(), ...(await judgeHealth()) })
     }
 
     if (path === '/api/events') {

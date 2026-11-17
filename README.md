@@ -71,6 +71,37 @@ curl -s localhost:7417/api/run -H 'content-type: application/json' \
 主指标是**首次交付合格率**：超时、截断、拒答、什么都没交付都算失败，而不是「无数据」。
 其次才是确定性分数、输出 token、思考 token、真实返回模型。
 
+## 视觉裁判：交给有眼睛的模型
+
+rubric 只能判断「这是不是一个格式正确的 SVG」，判断不了「这是不是一只鹈鹕在骑车」。
+所以 SVG 类探针的主指标交给多模态模型（默认 `deepseek-v4.1-flash`，走 OpenAI 兼容端点）：
+
+```
+SVG 产物 -> 截取单段 <svg> -> Chromium headless 渲染成 PNG -> 视觉模型
+        -> {pelican, vehicle, riding} ∈ {0,1,2} -> 视觉分 = 和/6×100
+```
+
+同一张图两层打分能差 40 分，这不是 bug，是两把尺子量的是两件事：
+
+| 探针 | rubric | 视觉 | 判官原话 |
+|---|---|---|---|
+| pelican-bicycle | 76 | **33** | 「两只简单鸟形带楔形喙…没有合理骑姿」 |
+| pelican-tractor | 87 | **50** | 「鸟没有喉囊；方正车体带轮；鸟坐在上方但无操控动作」 |
+
+裁判身份（endpoint / model / prompt 版本）会跟着每轮运行入档——换裁判或改 prompt 之后，
+新旧运行不能直接比，仪表必须说出来。聚合判定是算术，不外包给第二个模型自评。
+
+独立调用（给子 agent 或定时任务用，一条命令拿 JSON 结论）：
+
+```bash
+node scripts/judge.mjs --latest                       # 判定最新一轮
+node scripts/judge.mjs --run <runId>                  # 判定指定一轮
+node scripts/judge.mjs --svg out.svg --probe pelican-tractor
+```
+
+配置走环境变量：`RADAR_JUDGE_BASE` / `RADAR_JUDGE_KEY` / `RADAR_JUDGE_MODEL`。
+裁判不可用时，确定性判分照常工作，UI 会明说「视觉裁判不可用」而不是给个假分数。
+
 ## 目录
 
 ```
@@ -78,6 +109,8 @@ src/capture/mitm.mjs   CONNECT 隧道 + TLS 终止 + 请求/SSE 记录（ALPN �
 src/providers/         三个 CLI 的 spawn 适配（含 Windows .cmd shim 处理）
 src/probes/            探针定义与产物抽取
 src/scoring/grade.mjs  确定性判分（SVG / JSON / 数值 / 代码）
+src/judge/             视觉裁判：SVG->PNG 渲染、多模态判定、判定聚合
+scripts/judge.mjs      单命令判定入口（子 agent / 定时任务用）
 src/store.mjs          JSONL 运行日志 + 基线对比
 src/server.mjs         HTTP + SSE + 串行队列
 public/                单页仪表盘（无构建）

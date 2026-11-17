@@ -56,6 +56,7 @@ async function init() {
 
   $('#capture-info').textContent = `capture :${info.capture.port} · ${info.capture.path.split(/[\\/]/).pop()}`
   $('#live-dot').classList.add('live')
+  void showJudgeInfo()
 
   providerSel.addEventListener('change', syncModel)
   $('#run').addEventListener('click', startRun)
@@ -70,6 +71,22 @@ async function init() {
 
   await Promise.all([refreshSeries(), refreshHistory(info)])
   connectEvents()
+}
+
+async function showJudgeInfo() {
+  try {
+    const health = await api('/api/judge/health')
+    const chip = $('#judge-info')
+    if (health.ok) {
+      chip.textContent = `judge ${health.config.model}${health.hasModel === false ? ' (模型未提供)' : ''}`
+      chip.style.color = 'var(--accent)'
+    } else {
+      chip.textContent = `judge 不可用：${health.error ?? `HTTP ${health.status}`}`
+      chip.style.color = 'var(--bad)'
+    }
+  } catch (err) {
+    $('#judge-info').textContent = `judge ${String(err)}`
+  }
 }
 
 function syncModel() {
@@ -100,11 +117,28 @@ function connectEvents() {
     if (event.type === 'run-done') {
       $('#live-dot').className = 'dot live'
       $('#run').disabled = false
-      setLog(`完成：合格率 ${Math.round((event.run.summary?.passRate ?? 0) * 100)}% · 均分 ${event.run.summary?.avgScore ?? 0}`)
+      const v = event.run.verdict
+      setLog(
+        `完成：${v ? v.label : '—'} · 视觉 ${event.run.summary?.avgVisionScore ?? '—'}/100 · 合格率 ${Math.round(
+          (event.run.summary?.passRate ?? 0) * 100,
+        )}%`,
+      )
       state.run = event.run
       renderGallery(event.run)
       void refreshSeries()
       void refreshHistory()
+    }
+    if (event.type === 'judge-unavailable') {
+      setLog(`视觉裁判不可用：${event.error}（确定性判分仍然有效）`)
+    }
+    if (event.type === 'judge-done') {
+      const v = event.vision
+      setLog(`${event.probeId} 视觉判定：${v.ok ? v.score + '/100' : v.note}`)
+      if (state.run && state.run.id === event.runId) {
+        const probe = state.run.probes.find((p) => p.probeId === event.probeId && p.iteration === event.iteration)
+        if (probe) probe.vision = v
+        renderGallery(state.run)
+      }
     }
   }
   source.onerror = () => setLog('SSE 断开，浏览器会自动重连')
@@ -216,8 +250,12 @@ function renderGallery(run) {
   $('#gallery-title').textContent = `探针结果 · ${run.provider}`
   const s = run.summary
   $('#run-meta').textContent = s
-    ? `合格 ${s.passed}/${s.total} · 均分 ${s.avgScore} · 输出 ${fmt(s.avgOutputTokens)} tok · 思考 ${fmt(s.avgThinkingTokens)} tok · ${fmt(s.avgLatencyMs)}ms`
+    ? `视觉 ${s.avgVisionScore ?? '—'}/100 · 合格 ${s.passed}/${s.total} · 均分 ${s.avgScore} · 输出 ${fmt(
+        s.avgOutputTokens,
+      )} tok · 思考 ${fmt(s.avgThinkingTokens)} tok · ${fmt(s.avgLatencyMs)}ms`
     : `${probes.length} 个结果`
+
+  renderVerdict(run)
 
   if (probes.length === 0) {
     box.append(el('p', 'muted empty', '这一轮还没有结果'))
@@ -228,9 +266,12 @@ function renderGallery(run) {
     const card = el('div', `card ${probe.grade?.pass ? 'pass' : 'fail'}`)
     const shot = el('div', 'shot')
     const isSvg = probe.artifactPath?.endsWith('.svg')
-    if (isSvg) {
+    // Prefer the render: it is literally what the judge looked at, and it is
+    // what a human would see.
+    const imagePath = probe.vision?.renderPath ?? probe.artifactPath
+    if (isSvg && imagePath) {
       const img = el('img')
-      img.src = `/artifact/${probe.artifactPath}`
+      img.src = `/artifact/${imagePath}`
       img.alt = probe.label
       img.loading = 'lazy'
       shot.append(img)
@@ -262,10 +303,51 @@ function renderGallery(run) {
       body.append(el('div', 'reason', `线上回答本应合格（${probe.wireGrade.score}），CLI 交付侧丢掉了`))
     }
 
+    if (probe.vision) body.append(visionRow(probe.vision))
+
     card.append(body)
     card.addEventListener('click', () => void selectProbe(run, probe))
     box.append(card)
   }
+}
+
+function dimClass(n) {
+  return n === 2 ? 'good' : n === 1 ? 'mid' : 'bad'
+}
+
+function visionRow(vision) {
+  const wrap = el('div', 'vision')
+  if (vision.ok !== true) {
+    wrap.append(el('span', `v ${'bad'}`, `视觉: ${vision.note ?? vision.error ?? 'failed'}`))
+    return wrap
+  }
+  const score = el('span', `v ${vision.score >= 67 ? 'good' : vision.score >= 34 ? 'mid' : 'bad'}`, `视觉 ${vision.score}`)
+  wrap.append(score)
+  wrap.append(el('span', `v ${dimClass(vision.dims.pelican)}`, `鹈鹕${vision.dims.pelican}`))
+  wrap.append(el('span', `v ${dimClass(vision.dims.vehicle)}`, `车${vision.dims.vehicle}`))
+  wrap.append(el('span', `v ${dimClass(vision.dims.riding)}`, `骑${vision.dims.riding}`))
+  if (vision.note) wrap.append(el('span', 'note', vision.note))
+  return wrap
+}
+
+function renderVerdict(run) {
+  const box = $('#verdict')
+  const v = run.verdict
+  if (!v) {
+    box.hidden = true
+    return
+  }
+  box.hidden = false
+  box.className = `verdict ${v.tone}`
+  box.innerHTML = ''
+  box.append(el('span', 'lvl', `${v.label}${v.score !== null ? ' · ' + v.score + '/100' : ''}`))
+  const why = el('div', 'why')
+  for (const reason of v.reasons ?? []) {
+    const line = el('div')
+    line.textContent = reason
+    why.append(line)
+  }
+  box.append(why)
 }
 
 // ---------------------------------------------------------------- traffic

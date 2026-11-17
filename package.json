@@ -9,6 +9,7 @@
     "start": "node src/server.mjs",
     "dev": "node --watch src/server.mjs",
     "certs": "pwsh -NoProfile -File scripts/make-certs.ps1",
+    "judge": "node scripts/judge.mjs --latest",
     "smoke:capture": "node scripts/smoke-capture.mjs",
     "smoke:run": "node scripts/smoke-run.mjs"
   }

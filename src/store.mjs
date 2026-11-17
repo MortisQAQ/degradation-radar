@@ -89,13 +89,18 @@ export function computeSeries(runs, { baselineWindow = 5, minBaseline = 3 } = {}
       const baselineReady = history.length >= minBaseline
       const scoreNow = run.summary?.avgScore ?? 0
       const tokensNow = run.summary?.avgOutputTokens ?? 0
+      const visionNow = run.summary?.visionJudged > 0 ? run.summary.avgVisionScore : null
       const scoreBase = baselineReady ? median(history.map((r) => r.summary?.avgScore ?? 0)) : null
       const tokensBase = baselineReady ? median(history.map((r) => r.summary?.avgOutputTokens ?? 0)) : null
+      const visionBase = baselineReady
+        ? median(history.filter((r) => r.summary?.visionJudged > 0).map((r) => r.summary.avgVisionScore))
+        : null
       const stat = (now, base, scale) =>
         base === null || base === 0 ? null : Number(((now - base) / Math.max(scale, base * scale)).toFixed(3))
 
       const scoreZ = stat(scoreNow, scoreBase, 0.35)
       const tokensZ = stat(tokensNow, tokensBase, 0.35)
+      const visionZ = visionNow !== null && visionBase ? Number(((visionNow - visionBase) / Math.max(1, visionBase)).toFixed(3)) : null
       const passZ = baselineReady
         ? Number(((run.summary?.passRate ?? 0) - median(history.map((r) => r.summary?.passRate ?? 0))).toFixed(3))
         : null
@@ -105,13 +110,16 @@ export function computeSeries(runs, { baselineWindow = 5, minBaseline = 3 } = {}
         startedAt: run.startedAt,
         passRate: run.summary?.passRate ?? 0,
         avgScore: scoreNow,
+        visionScore: visionNow,
         avgOutputTokens: tokensNow,
         avgLatencyMs: run.summary?.avgLatencyMs ?? 0,
         returnedModels: run.summary?.returnedModels ?? [],
         scoreZ,
+        visionZ,
         tokensZ,
         passZ,
         baselineReady,
+        verdict: run.verdict?.level ?? null,
       })
     }
     const latest = points[points.length - 1] ?? null
@@ -131,6 +139,11 @@ export function computeSeries(runs, { baselineWindow = 5, minBaseline = 3 } = {}
 /** 0-100: 100 is "matches its own recent baseline", lower is worse. */
 function healthScore(point) {
   if (!point.baselineReady) return null
+  // Vision has no meaningful baseline yet (judge added later, or too few
+  // drawings judged) — fall back to the rubric rather than pretending.
+  if (point.visionScore !== null && point.visionZ !== null) {
+    return Math.round(Math.max(0, Math.min(100, 100 + point.visionZ * 100)))
+  }
   let health = 100
   if (point.passZ !== null) health += point.passZ * 100
   if (point.scoreZ !== null) health += point.scoreZ * 30
