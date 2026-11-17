@@ -13,6 +13,12 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` is an attribute, not a suggestion: any author rule that sets
+   `display` (e.g. `.drawer { display: flex }`) silently outranks the UA
+   `[hidden] { display: none }`. That made the flow drawer permanently visible
+   and its own 关闭 button a no-op. One global rule keeps this from coming back. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);

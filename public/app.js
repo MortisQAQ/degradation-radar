@@ -20,6 +20,17 @@ const state = {
 }
 
 const fmt = (n) => (typeof n === 'number' ? n.toLocaleString('en-US') : '—')
+const clock = (iso) => {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+const elapsed = (a, b) => {
+  const ms = new Date(b).getTime() - new Date(a).getTime()
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  return ms < 60000 ? `${(ms / 1000).toFixed(0)}s` : `${Math.floor(ms / 60000)}m${String(Math.round((ms % 60000) / 1000)).padStart(2, '0')}s`
+}
 
 async function api(path, init) {
   const res = await fetch(path, init)
@@ -61,6 +72,11 @@ async function init() {
   providerSel.addEventListener('change', syncModel)
   $('#run').addEventListener('click', startRun)
   $('#drawer-close').addEventListener('click', () => ($('#drawer').hidden = true))
+  // Escape closes the flow drawer: a panel that covers most of the viewport
+  // needs a keyboard exit, not just a 12px target.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('#drawer').hidden) $('#drawer').hidden = true
+  })
   for (const btn of document.querySelectorAll('.tabs button')) {
     btn.addEventListener('click', () => {
       state.tab = btn.dataset.tab
@@ -184,8 +200,12 @@ async function refreshHistory(info) {
     const btn = el('button')
     const pass = Math.round((run.summary?.passRate ?? 0) * 100)
     btn.append(el('div', null, `${run.provider} · ${run.model}`))
-    const meta = el('div', 'hmeta', `${new Date(run.startedAt).toLocaleString('zh-CN')} · ${pass}% · ${run.summary?.avgScore ?? 0}分`)
+    const vision = run.summary?.visionJudged > 0 ? ` · 视觉${run.summary.avgVisionScore}` : ''
+    const meta = el('div', 'hmeta', `${clock(run.startedAt)} · ${pass}% · ${run.summary?.avgScore ?? 0}分${vision}`)
     btn.append(meta)
+    // Infrastructure deaths look identical to "the model produced nothing"
+    // unless we say so; mark them so they never get read as evidence.
+    if ((run.summary?.infraBlocked ?? 0) > 0) btn.append(el('div', 'hmeta', '⚠ 基础设施失败，非降智证据'))
     btn.addEventListener('click', () => {
       for (const b of box.querySelectorAll('button')) b.classList.remove('active')
       btn.classList.add('active')
@@ -249,11 +269,12 @@ function renderGallery(run) {
   const probes = [...run.probes].sort((a, b) => (a.probeId + a.iteration).localeCompare(b.probeId + b.iteration))
   $('#gallery-title').textContent = `探针结果 · ${run.provider}`
   const s = run.summary
+  const when = run.finishedAt ? `${clock(run.startedAt)} → ${clock(run.finishedAt).slice(11)}（${elapsed(run.startedAt, run.finishedAt)}）` : clock(run.startedAt)
   $('#run-meta').textContent = s
-    ? `视觉 ${s.avgVisionScore ?? '—'}/100 · 合格 ${s.passed}/${s.total} · 均分 ${s.avgScore} · 输出 ${fmt(
+    ? `${when} · ${run.model} · 视觉 ${s.avgVisionScore ?? '—'}/100 · 合格 ${s.passed}/${s.total} · 均分 ${s.avgScore} · 输出 ${fmt(
         s.avgOutputTokens,
       )} tok · 思考 ${fmt(s.avgThinkingTokens)} tok · ${fmt(s.avgLatencyMs)}ms`
-    : `${probes.length} 个结果`
+    : `${when} · ${probes.length} 个结果`
 
   renderVerdict(run)
 
@@ -342,6 +363,7 @@ function renderVerdict(run) {
   box.innerHTML = ''
   box.append(el('span', 'lvl', `${v.label}${v.score !== null ? ' · ' + v.score + '/100' : ''}`))
   const why = el('div', 'why')
+  why.append(el('div', null, `本轮 @ ${clock(run.startedAt)}`))
   for (const reason of v.reasons ?? []) {
     const line = el('div')
     line.textContent = reason

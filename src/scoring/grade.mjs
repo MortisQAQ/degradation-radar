@@ -59,6 +59,17 @@ export function gradeSvg(text, { requireViewBox = true } = {}) {
   }
   const svgMatch = /<svg[\s\S]*?(<\/svg>|$)/i.exec(text)
   if (!svgMatch) {
+    // "Asked for an SVG, got a raster image" is a different failure from
+    // "emitted nothing": the agent handed the job to an image-generation tool
+    // and the product no longer matches the request. Real case observed on
+    // agy: gemini-3.1-flash-image returned a 1 MB JPEG instead of markup.
+    const raster =
+      /\.(jpe?g|png|webp|gif)\b/i.test(text) ||
+      /\b(?:generated|produced|created)\b[^.]{0,40}\b(?:jpeg|jpg|png|raster|bitmap)\b/i.test(text) ||
+      /\bunable to produce (?:an? )?(?:actual |native )?svg\b/i.test(text)
+    if (raster) {
+      return { pass: false, score: 0, failureReason: 'delivered-raster-image-not-svg', metrics: { wrongFormat: true } }
+    }
     return { pass: false, score: 0, failureReason: 'no-svg-element', metrics }
   }
   const svg = svgMatch[0]
