@@ -271,7 +271,7 @@ function renderGallery(run) {
   const s = run.summary
   const when = run.finishedAt ? `${clock(run.startedAt)} → ${clock(run.finishedAt).slice(11)}（${elapsed(run.startedAt, run.finishedAt)}）` : clock(run.startedAt)
   $('#run-meta').textContent = s
-    ? `${when} · ${run.model} · 视觉 ${s.avgVisionScore ?? '—'}/100 · 合格 ${s.passed}/${s.total} · 均分 ${s.avgScore} · 输出 ${fmt(
+    ? `${when} · ${run.model} · 视觉 ${s.avgVisionScore ?? '—'}/100 · 可渲染 ${s.renderableArtifacts ?? '—'}/${s.total} · 合格 ${s.passed}/${s.total} · 均分 ${s.avgScore} · 输出 ${fmt(
         s.avgOutputTokens,
       )} tok · 思考 ${fmt(s.avgThinkingTokens)} tok · ${fmt(s.avgLatencyMs)}ms`
     : `${when} · ${probes.length} 个结果`
@@ -290,7 +290,9 @@ function renderGallery(run) {
     // Prefer the render: it is literally what the judge looked at, and it is
     // what a human would see.
     const imagePath = probe.vision?.renderPath ?? probe.artifactPath
-    if (isImage && imagePath) {
+    if (probe.artifactKind === 'broken') {
+      shot.append(el('pre', null, '该轮产物无法渲染（归档内容不是有效 SVG，且已无法找回）'))
+    } else if (isImage && imagePath) {
       const img = el('img')
       img.src = `/artifact/${imagePath}`
       img.alt = probe.label
@@ -315,6 +317,7 @@ function renderGallery(run) {
 
     if (!probe.grade?.pass) body.append(el('div', 'reason', probe.grade?.failureReason ?? 'failed'))
     if (probe.artifactKind === 'image') body.append(el('div', 'reason', '交付的是栅格图而不是 SVG —— 按口径记失败'))
+    if (probe.backfilledFrom) body.append(el('div', 'reason', '产物为事后从 CLI 缓存找回，当轮判定保持原样'))
 
     const kv = el('div', 'kv')
     kv.append(el('span', null, `出 ${fmt(probe.usage?.output_tokens)}/${fmt(probe.usage?.thoughtsTokenCount ?? probe.usage?.thinking_tokens)}`))

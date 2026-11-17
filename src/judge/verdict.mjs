@@ -62,6 +62,17 @@ export function computeVerdict(run, history = []) {
 
   if (blocked > 0) reasons.push(`${blocked}/${total} 个探针基础设施失败，已从判定中剔除`)
 
+  // Hard gate: no renderable artifact means no usable measurement, whatever
+  // the per-probe rubric said about the reply text.
+  const drawingProbes = s.svgProbes ?? total
+  const renderable = s.renderableArtifacts ?? drawingProbes
+  const noneRenderable = renderable === 0
+  if (noneRenderable) {
+    reasons.push('没有任何探针交回可渲染的 SVG —— 按「交付失败」处理，不参与合格率')
+  } else if (renderable < drawingProbes) {
+    reasons.push(`${drawingProbes - renderable}/${drawingProbes} 个绘图探针的产物无法渲染，合格率仅供参考`)
+  }
+
   if (s.requestedModelNeverServed) {
     reasons.push(`请求的模型 ${run.model} 在网线上一次都没被真正服务——路由被换掉了`)
   }
@@ -91,10 +102,13 @@ export function computeVerdict(run, history = []) {
   reasons.push(vision !== null ? `视觉判定 ${primary}/100（基线 ${Math.round(basePrimary)}）` : `合格率 ${primary}%（基线 ${Math.round(basePrimary)}%）`)
 
   let level
-  if (primary <= 33 || drop >= 35) level = 'degraded'
+  if (noneRenderable) level = 'degraded'
+  else if (primary <= 33 || drop >= 35) level = 'degraded'
   else if (primary <= 60 || drop >= 18) level = 'suspect'
+  else if (renderable < drawingProbes) level = 'suspect'
   else level = 'healthy'
 
+  if (primary <= 60) reasons.push(`视觉分 ${primary} 低于 60 的及格线（鹈鹕/载具/骑姿三项里至少一项明显缺失）`)
   if (drop >= 18) reasons.push(`相对自身基线下降 ${drop.toFixed(0)}%`)
   if (s.failures?.length > 0 && level !== 'healthy') reasons.push(`失败项：${s.failures.slice(0, 4).join('；')}`)
 

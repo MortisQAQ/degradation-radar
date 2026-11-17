@@ -38,47 +38,16 @@ export const PROBES = {
     saveAs: 'pelican-rocket.svg',
     prompt: 'Generate an SVG of a pelican riding a rocket.',
   },
-  'json-strict': {
-    id: 'json-strict',
-    label: '严格 JSON',
-    kind: 'json',
-    prompt:
-      'Return ONLY a JSON object, no prose and no code fence, with exactly these keys: ' +
-      '"city" (string), "population" (integer), "landmarks" (array of exactly 3 strings), ' +
-      '"founded" (integer year). Use Tokyo.',
-  },
-  math: {
-    id: 'math',
-    label: '数学推理',
-    kind: 'number',
-    prompt:
-      'A tank is filled by pipe A in 6 hours and by pipe B in 4 hours. Both are opened together, ' +
-      'but pipe A is closed 1 hour before the tank is full. How many hours did it take in total? ' +
-      'Answer with the number only (decimals allowed).',
-    // 1/a + 1/b = 5/12 per hour. If total time is t, A runs t-1, B runs t:
-    // (t-1)/6 + t/4 = 1 => 2(t-1) + 3t = 12 => 5t = 14 => t = 2.8
-    answer: 2.8,
-    tolerance: 0.02,
-  },
-  'code-lis': {
-    id: 'code-lis',
-    label: '代码（LIS）',
-    kind: 'code',
-    saveAs: 'lis.py',
-    prompt:
-      'Write a Python function `lis(nums)` that returns the length of the longest strictly ' +
-      'increasing subsequence in O(n log n). Output only one fenced python code block.',
-    tests: [
-      ['lis([10,9,2,5,3,7,101,18])', 4],
-      ['lis([1,2,3,4])', 4],
-      ['lis([5,4,3,2,1])', 1],
-      ['lis([])', 0],
-      ['lis([3,3,3])', 1],
-    ],
-  },
 }
 
-export const DEFAULT_PROBE_IDS = ['pelican-bicycle', 'json-strict', 'math', 'code-lis']
+/**
+ * Pelican only, by decision: a drawing probe answers the question the
+ * dashboard exists for, and it does so in one comparable unit. The JSON / math
+ * / code probes were dropped — they measured "is the model smart" but told us
+ * nothing about whether the delivered artifact was usable, and mixing them into
+ * a pass rate made a 1-of-4 pelican round look like a 100% clean run.
+ */
+export const DEFAULT_PROBE_IDS = ['pelican-bicycle', 'pelican-skateboard', 'pelican-tractor', 'pelican-rocket']
 
 /** Extract the first plausible SVG document from a model reply. */
 export function extractSvg(text) {

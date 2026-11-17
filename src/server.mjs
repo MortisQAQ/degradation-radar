@@ -129,6 +129,39 @@ for (const run of runs) {
   }
 }
 
+// A .svg name proves nothing: early runs archived the reply prose under that
+// name. Verify the bytes once at load so the UI can never dress up a broken
+// archive as a drawing.
+for (const run of runs) {
+  for (const probe of run.probes ?? []) {
+    if (probe.artifactKind !== 'svg' || !probe.artifactPath) continue
+    try {
+      const body = await readFile(probe.artifactPath, 'utf8')
+      probe.artifactRenderable = /<svg[\s>]/i.test(body) && body.length > 32
+    } catch {
+      probe.artifactRenderable = false
+    }
+    if (probe.artifactRenderable === false) probe.artifactKind = 'broken'
+  }
+}
+
+/**
+ * Recompute the renderability gate for stored runs.
+ *
+ * Only probes that were *supposed* to produce a drawing count: the retired
+ * JSON / math / code probes archived plain text by design, and treating that as
+ * "product missing" would slander every historical run.
+ */
+const isSvgProbe = (probe) =>
+  probe.probeKind === 'svg' || (probe.probeKind === undefined && ['svg', 'image', 'broken'].includes(probe.artifactKind))
+for (const run of runs) {
+  if (!run.summary) continue
+  const svgProbes = (run.probes ?? []).filter(isSvgProbe)
+  if (svgProbes.length === 0) continue
+  run.summary.svgProbes = svgProbes.length
+  run.summary.renderableArtifacts = svgProbes.filter((p) => p.artifactRenderable === true).length
+}
+
 const capture = await startCapture({ port: CAPTURE_PORT, certDir: join(ROOT, 'certs'), captureDir: join(ROOT, 'captures') })
 const flows = capture.flows
 const flowIndex = new Map()
@@ -260,12 +293,7 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
       ]
       const sseText = extractGeneratedText(capturedThisProbe)
 
-      // Grade the CLI's own output. When the CLI returned nothing usable but
-      // the wire shows a complete answer, that mismatch is itself a finding
-      // (the orchestration layer dropped it) and is recorded separately.
-      const grade = await gradeProbe(probe, delivered, result.error ?? result.stderrTail)
-      const wireGrade = sseText !== null && sseText !== result.text ? await gradeProbe(probe, sseText) : null
-
+      // (grading happens below, against the archived artifact)
       // Archive every raw file the CLI produced — binaries included. Copying
       // only text is how a 500 KB drawing survives nowhere except a scratch
       // directory the vendor is free to prune.
@@ -311,8 +339,31 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         artifactPath = await store.saveArtifact(run.id, `${probeId}-${i}`, 'txt', delivered)
       }
 
+      // Grade the archived bytes, not the transient reply. Scoring one text
+      // while the card renders another is exactly how a run reports 100% next
+      // to a card that says "no renderable artifact".
+      let artifactBody = null
+      if (artifactKind === 'svg' && artifactPath) {
+        try {
+          artifactBody = await readFileAsync(artifactPath, 'utf8')
+        } catch {
+          artifactBody = null
+        }
+      }
+      const artifactRenderable = Boolean(artifactBody && /<svg[\s>]/i.test(artifactBody))
+      const grade = await gradeProbe(probe, artifactBody ?? delivered, result.error ?? result.stderrTail)
+      if (probe.kind === 'svg' && !artifactRenderable && grade.pass) {
+        // Nothing renderable was archived: this is a failed delivery whatever
+        // the reply text claimed.
+        grade.pass = false
+        grade.score = 0
+        grade.failureReason = 'artifact-not-renderable'
+      }
+      const wireGrade = sseText !== null && sseText !== result.text ? await gradeProbe(probe, sseText) : null
+
       const record = {
         probeId,
+        probeKind: probe.kind,
         label: probe.label,
         iteration: i,
         startedAt: new Date().toISOString(),
@@ -337,6 +388,7 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         stderrTail: result.stderrTail ?? '',
         artifactPath,
         artifactKind,
+        artifactRenderable,
         deliveredArtifacts: copied,
         flowIds: capturedThisProbe.map((f) => f.id),
       }
@@ -424,6 +476,8 @@ function summarize(run) {
   const requestedButNeverServed = Boolean(run.model) && !routed.some((m) => sameModel(m, run.model))
   const foreign = foreignModels(run.model, routed)
   const judged = list.filter((p) => p.vision?.ok === true && typeof p.vision.score === 'number')
+  const renderable = list.filter((p) => p.artifactRenderable === true).length
+  const drawingProbes = list.filter((p) => p.probeKind === 'svg').length
   return {
     total: list.length,
     passed: pass,
@@ -444,6 +498,10 @@ function summarize(run) {
     // looked", which is different from "it scored zero".
     visionJudged: judged.length,
     avgVisionScore: judged.length === 0 ? null : Math.round(judged.reduce((a, p) => a + p.vision.score, 0) / judged.length),
+    // Did we end up with a file a human could open? This is a gate, not a
+    // detail: a pass rate computed over artifacts nobody can render is noise.
+    renderableArtifacts: renderable,
+    svgProbes: drawingProbes,
   }
 }
 
