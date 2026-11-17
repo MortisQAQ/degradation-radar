@@ -212,6 +212,35 @@ SVG 产物 ──isolateSvg──▶ 只截取一段 <svg>…</svg> ──Chromi
 - 这也是为什么 verdict 除了绝对分还要跟自身滚动基线比：边界抖动在基线里会被平均掉，
   而真正的退化不会。
 
+### 7.6 成对比较：把「像不像」换成「差多少」
+
+绝对评分没有锚点。同一张图、`temperature: 0`，两次调用能差 17 分（见 7.5），
+而「58 分算不算降智」这个问题本身就没有答案。
+
+改法是把参照图喂给判官，让它做两图对比，回答「相对同模型正常放开跑差多少」：
+
+| gap | 含义 | 折算分 |
+|---|---|---|
+| `same_or_better` | 细节与结构相当 | 100 |
+| `slightly_worse` | 认得出来，但更薄（缺件、形状粗糙） | 70 |
+| `clearly_worse` | 主体勉强能看，主要部件缺失 | 40 |
+| `unusable` | 画的不是要求的东西 | 0 |
+
+参照来源：Simon Willison 的 [Gemini 4 SVG thinking-level comparison](https://static.simonwillison.net/static/2026/gemini-4-pelicans.html)，
+取 `thinking=high × gemini-4-hydrogen`，逐字同一句 prompt。`scripts/fetch-baseline.mjs`
+负责抓取、渲染并记录出处——图不入库，只入脚本，保证可追溯。
+
+**实测差别很大**：改成成对之后，连着两发都是 `clearly_worse`（40 分），判词一致
+（「crude duplicate icons; pelican and bicycle only barely recognizable」）；
+而绝对模式下同一批图在 33/50/83 之间来回跳。
+
+两条纪律：
+
+1. **成对分与绝对分是两把尺子，不能混算**。运行记录里存 `judge.mode` 与
+   `judge.baselineIds`，基线与健康分按模式分开成序列；混着算会凭空造出 ±20 分的漂移。
+2. **只有有公开同模型参照的探针才做成对**。`pelican-bicycle` 有，
+   skateboard / tractor / rocket 没有，就老老实实标「绝对分」，不假装有基准。
+
 ## 8. 尚未实现
 
 - h2 / gRPC 上游（当前 ALPN 固定 h1，若某厂商强制 h2 会退化）

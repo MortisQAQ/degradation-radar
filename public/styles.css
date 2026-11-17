@@ -73,6 +73,9 @@ body {
 .vision .v.mid { color: var(--warn); border-color: rgba(226,179,65,.35); }
 .vision .v.bad { color: var(--bad); border-color: rgba(226,96,79,.35); }
 .vision .note { color: var(--muted); flex: 1 1 100%; }
+.ref { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.ref img { width: 56px; height: 40px; object-fit: contain; background: #fff; border-radius: 4px; border: 1px solid var(--line); }
+.ref span { color: var(--muted); font-size: 10px; font-family: var(--mono); }
 
 .controls {
   display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;

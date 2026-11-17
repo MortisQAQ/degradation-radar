@@ -89,7 +89,10 @@ export function createStore(root = 'data') {
 export function computeSeries(runs, { baselineWindow = 5, minBaseline = 3 } = {}) {
   const byService = new Map()
   for (const run of runs) {
-    const key = `${run.provider}/${run.model}`
+    // Mode is part of the identity: pairwise and absolute scores are not
+    // comparable, so they are separate series even for the same model.
+    const mode = run.judge?.mode ?? 'none'
+    const key = `${run.provider}/${run.model}${mode === 'pairwise' ? ' · 对比参照' : mode === 'absolute' ? ' · 绝对分' : ''}`
     if (!byService.has(key)) byService.set(key, [])
     byService.get(key).push(run)
   }

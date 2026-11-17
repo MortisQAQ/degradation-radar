@@ -1,6 +1,7 @@
 // Judging one drawing: rasterize, ask the multimodal model, keep both artifacts.
 import { saveRender, renderSvg } from './render.mjs'
-import { judgeImage, judgeConfig, subjectFor } from './vision.mjs'
+import { judgeImage, judgePair, judgeConfig, subjectFor } from './vision.mjs'
+import { baselineInfo } from './baselines.mjs'
 import { judgeProfile } from './profile.mjs'
 
 /**
@@ -31,11 +32,29 @@ export async function judgeSvgArtifact({ artifactPath, svgText, probeId, config 
     // Keeping the PNG is a convenience, not a requirement.
   }
 
-  const verdict = await judgeImage({ png: render.png, probeId, config })
+  // Pairwise when a same-model reference exists: "compare to normal" is a
+  // stronger question than "does this look like a pelican", and it is the one
+  // that actually answers "is it degraded".
+  const baseline = baselineInfo(probeId)
+  let verdict
+  if (baseline?.available) {
+    verdict = await judgePair({
+      candidatePng: render.png,
+      referencePng: baseline.png,
+      probeId,
+      config,
+    })
+    verdict.mode = 'pairwise'
+    verdict.baseline = { id: baseline.id, source: baseline.source }
+  } else {
+    verdict = await judgeImage({ png: render.png, probeId, config })
+    verdict.mode = 'absolute'
+    if (baseline?.hint) verdict.baselineHint = baseline.hint
+  }
   return {
     ...verdict,
     renderPath: renderPath ? renderPath.split('\\').join('/') : null,
     viewport: { width: render.width, height: render.height },
-    profile: judgeProfile(config),
+    profile: { ...judgeProfile(config), mode: verdict.mode, baselineId: baseline?.id ?? null },
   }
 }

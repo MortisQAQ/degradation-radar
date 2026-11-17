@@ -71,6 +71,26 @@ curl -s localhost:7417/api/run -H 'content-type: application/json' \
 主指标是**首次交付合格率**：超时、截断、拒答、什么都没交付都算失败，而不是「无数据」。
 其次才是确定性分数、输出 token、思考 token、真实返回模型。
 
+## 参照基准：和「正常水平」比，而不是凭空打分
+
+绝对评分只能回答「像不像一只鹈鹕」，没有锚点，同一张图两次调用能差 17 分。
+所以 `pelican-bicycle` 走**成对比较**：判官同时看参考图和被测图，回答「相对同模型正常
+放开跑差多少」，映射成 `same_or_better 100 / slightly_worse 70 / clearly_worse 40 / unusable 0`。
+
+参考图来自 Simon Willison 的
+[Gemini 4 SVG thinking-level comparison](https://static.simonwillison.net/static/2026/gemini-4-pelicans.html)，
+取 `thinking=high × gemini-4-hydrogen` 那一格（逐字同一句 prompt）：
+
+```bash
+node scripts/fetch-baseline.mjs     # 抓取 + 渲染 + 写 PROVENANCE.md
+```
+
+仓库不内置这张图（它是别人的产出），由脚本按来源重建，出处记在
+`data/baselines/PROVENANCE.md`。只有 `pelican-bicycle` 有公开可比参照，
+其余三个变体仍走绝对评分，界面上会标出用的是哪把尺子。
+
+**两者不可混算**：成对分和绝对分是两条独立序列，基线与健康分都按判定模式分开统计。
+
 ## 视觉裁判：交给有眼睛的模型
 
 rubric 只能判断「这是不是一个格式正确的 SVG」，判断不了「这是不是一只鹈鹕在骑车」。

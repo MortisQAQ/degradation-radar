@@ -44,6 +44,7 @@ async function init() {
   const info = await api('/api/providers')
   state.providers = info.providers
   state.probes = info.probes
+  state.baselines = info.baselines ?? []
 
   const providerSel = $('#provider')
   providerSel.innerHTML = ''
@@ -346,6 +347,19 @@ function renderGallery(run) {
 
     if (probe.vision) body.append(visionRow(probe.vision))
 
+    // Show what it was compared against: a score means nothing without the
+    // reference the judge used.
+    const baseline = (state.baselines ?? []).find((b) => b.probeId === probe.probeId && b.available)
+    if (baseline?.url) {
+      const ref = el('div', 'ref')
+      const refImg = el('img')
+      refImg.src = baseline.url
+      refImg.alt = `参照：${baseline.id}`
+      refImg.loading = 'lazy'
+      ref.append(refImg, el('span', null, `参照 ${baseline.id}`))
+      body.append(ref)
+    }
+
     card.append(body)
     card.addEventListener('click', () => void selectProbe(run, probe))
     box.append(card)
@@ -364,6 +378,11 @@ function visionRow(vision) {
   }
   const score = el('span', `v ${vision.score >= 67 ? 'good' : vision.score >= 34 ? 'mid' : 'bad'}`, `视觉 ${vision.score}`)
   wrap.append(score)
+  if (vision.mode === 'pairwise' && vision.gap) {
+    const label = { same_or_better: '持平/更好', slightly_worse: '略差', clearly_worse: '明显更差', unusable: '不可用' }[vision.gap] ?? vision.gap
+    const tone = vision.gap === 'same_or_better' ? 'good' : vision.gap === 'slightly_worse' ? 'mid' : 'bad'
+    wrap.append(el('span', `v ${tone}`, `对比参照 ${label}`))
+  }
   wrap.append(el('span', `v ${dimClass(vision.dims.pelican)}`, `鹈鹕${vision.dims.pelican}`))
   wrap.append(el('span', `v ${dimClass(vision.dims.vehicle)}`, `车${vision.dims.vehicle}`))
   wrap.append(el('span', `v ${dimClass(vision.dims.riding)}`, `骑${vision.dims.riding}`))

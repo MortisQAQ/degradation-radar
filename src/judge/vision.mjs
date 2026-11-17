@@ -221,3 +221,138 @@ export async function judgeHealth(config = judgeConfig()) {
     return { ok: false, error: String(err).slice(0, 200), model: config.model, latencyMs: Date.now() - started }
   }
 }
+
+// ---------------------------------------------------------------- pairwise
+
+const GAP_SCORE = { same_or_better: 100, slightly_worse: 70, clearly_worse: 40, unusable: 0 }
+
+function buildPairPrompt(subject) {
+  return [
+    `IMAGE 1 is the reference: the same model answering "Generate an SVG of ${subject}" under normal conditions.`,
+    `IMAGE 2 is the candidate under test, same prompt.`,
+    '',
+    'Compare IMAGE 2 against IMAGE 1. Judge only what is visible.',
+    'Return ONLY a JSON object, no prose, no code fence:',
+    '{',
+    '  "pelican": 0 | 1 | 2,',
+    '  "vehicle": 0 | 1 | 2,',
+    '  "riding": 0 | 1 | 2,',
+    '  "gap": "same_or_better" | "slightly_worse" | "clearly_worse" | "unusable",',
+    '  "note": "<= 20 words"',
+    '}',
+    '',
+    'pelican/vehicle/riding describe IMAGE 2 on the 0-2 scale ' +
+      '(0 = absent, 1 = partial or unrecognizable, 2 = clearly present).',
+    'gap = how far IMAGE 2 falls short of IMAGE 1 overall:',
+    '  same_or_better = comparable detail and structure;',
+    '  slightly_worse = recognizably the same subject but thinner (missing parts, crude shapes);',
+    '  clearly_worse = the subject is only barely there, major parts missing;',
+    '  unusable = not a drawing of the requested subject.',
+    'Output the JSON object and nothing else. Do not analyse, do not explain.',
+  ].join('\n')
+}
+
+/**
+ * Judge a candidate drawing against a reference drawing.
+ * @returns {Promise<{ok:boolean, score:number|null, gap:string|null, dims:object|null, note:string, model:string, latencyMs:number}>}
+ */
+export async function judgePair({ candidatePng, referencePng, probeId, config = judgeConfig() }) {
+  const subject = subjectFor(probeId)
+  if (!subject) return { ok: false, score: null, gap: null, dims: null, note: 'no vision subject', model: config.model, latencyMs: 0 }
+  if (!candidatePng?.length) return { ok: false, score: null, gap: null, dims: null, note: 'empty render', model: config.model, latencyMs: 0 }
+  if (!referencePng?.length) return { ok: false, score: null, gap: null, dims: null, note: 'empty reference', model: config.model, latencyMs: 0 }
+
+  const started = Date.now()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs)
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0,
+        max_tokens: 2500,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: buildPairPrompt(subject) },
+              { type: 'text', text: 'IMAGE 1 (reference):' },
+              { type: 'image_url', image_url: { url: `data:image/png;base64,${referencePng.toString('base64')}` } },
+              { type: 'text', text: 'IMAGE 2 (candidate):' },
+              { type: 'image_url', image_url: { url: `data:image/png;base64,${candidatePng.toString('base64')}` } },
+            ],
+          },
+        ],
+      }),
+    })
+    const latencyMs = Date.now() - started
+    const text = await res.text()
+    if (!res.ok) {
+      return { ok: false, score: null, gap: null, dims: null, note: `judge HTTP ${res.status}`, model: config.model, latencyMs, raw: text.slice(0, 400) }
+    }
+    let body
+    try {
+      body = JSON.parse(text)
+    } catch {
+      return { ok: false, score: null, gap: null, dims: null, note: 'judge returned non-JSON envelope', model: config.model, latencyMs }
+    }
+    const message = body?.choices?.[0]?.message ?? {}
+    const primary = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '')
+    const presented = primary.trim() === '' ? String(message.reasoning_content ?? '') : primary
+    const parsed = extractVerdict(presented)
+    if (!parsed) {
+      return {
+        ok: false,
+        score: null,
+        gap: null,
+        dims: null,
+        note: presented.trim() === '' ? 'judge returned empty content (token budget?)' : 'judge verdict was not parseable',
+        model: body?.model ?? config.model,
+        latencyMs,
+        raw: presented.slice(0, 600),
+        finishReason: body?.choices?.[0]?.finish_reason ?? null,
+      }
+    }
+    const pelican = clamp01(parsed.pelican)
+    const vehicle = clamp01(parsed.vehicle)
+    const riding = clamp01(parsed.riding)
+    const gap = typeof parsed.gap === 'string' ? parsed.gap.trim().toLowerCase() : ''
+    if (pelican === null || vehicle === null || riding === null || !(gap in GAP_SCORE)) {
+      return {
+        ok: false,
+        score: null,
+        gap: null,
+        dims: null,
+        note: 'judge used values outside the rubric',
+        model: body?.model ?? config.model,
+        latencyMs,
+        raw: JSON.stringify(parsed).slice(0, 400),
+      }
+    }
+    return {
+      ok: true,
+      score: GAP_SCORE[gap],
+      gap,
+      dims: { pelican, vehicle, riding },
+      note: typeof parsed.note === 'string' ? parsed.note.slice(0, 160) : '',
+      model: body?.model ?? config.model,
+      latencyMs,
+    }
+  } catch (err) {
+    const aborted = err?.name === 'AbortError'
+    return {
+      ok: false,
+      score: null,
+      gap: null,
+      dims: null,
+      note: aborted ? `judge timed out after ${config.timeoutMs}ms` : String(err).slice(0, 200),
+      model: config.model,
+      latencyMs: Date.now() - started,
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}

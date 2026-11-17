@@ -17,6 +17,7 @@ import { judgeSvgArtifact } from './judge/index.mjs'
 import { judgeConfig, judgeHealth } from './judge/vision.mjs'
 import { judgeProfile } from './judge/profile.mjs'
 import { computeVerdict } from './judge/verdict.mjs'
+import { listBaselines } from './judge/baselines.mjs'
 import { foreignModels, sameModel } from './model-alias.mjs'
 
 const PORT = Number(process.env.RADAR_PORT ?? 7417)
@@ -499,11 +500,24 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
   }
 
   run.summary = summarize(run)
+  // Scores from pairwise and absolute judging live on different scales
+  // (100/70/40/0 vs a continuous 0-100). Record which one produced this run so
+  // the baseline comparison can refuse to mix them.
+  const modes = new Set(run.probes.map((p) => p.vision?.mode).filter(Boolean))
+  run.judge.mode = modes.size === 0 ? 'none' : modes.size === 1 ? [...modes][0] : 'mixed'
+  run.judge.baselineIds = [...new Set(run.probes.map((p) => p.vision?.baseline?.id).filter(Boolean))]
   // History must be read before this run is appended, so a run is never
   // compared against itself.
   run.verdict = computeVerdict(
     run,
-    runs.filter((r) => r.provider === run.provider && r.model === run.model),
+    runs.filter(
+      (r) =>
+        r.provider === run.provider &&
+        r.model === run.model &&
+        // same ruler only
+        (r.judge?.mode ?? 'none') === run.judge.mode &&
+        JSON.stringify(r.judge?.baselineIds ?? []) === JSON.stringify(run.judge.baselineIds),
+    ),
   )
   run.status = 'done'
   run.finishedAt = new Date().toISOString()
@@ -628,6 +642,10 @@ const server = http.createServer(async (req, res) => {
         providers: await listProviders(),
         probes: Object.values(PROBES).map((p) => ({ id: p.id, label: p.label, kind: p.kind })),
         defaultProbeIds: DEFAULT_PROBE_IDS,
+        baselines: listBaselines(DEFAULT_PROBE_IDS).map((b) => ({
+          ...b,
+          url: b.available && b.id ? `/baselines/${b.id}.png` : null,
+        })),
         capture: { port: capture.port, path: capture.capturePath },
         busy,
         queued: pending.length,
@@ -759,6 +777,19 @@ const server = http.createServer(async (req, res) => {
         return res.end(body)
       } catch {
         return json(res, 404, { error: 'artifact not found' })
+      }
+    }
+
+    // Reference drawings for pairwise judging.
+    if (path.startsWith('/baselines/')) {
+      const name = decodeURIComponent(path.slice('/baselines/'.length))
+      if (!/^[A-Za-z0-9._-]+$/.test(name) || name.includes('..')) return json(res, 400, { error: 'bad baseline path' })
+      try {
+        const body = await readFile(join(ROOT, 'data', 'baselines', name))
+        res.writeHead(200, { 'content-type': MIME[extname(name).toLowerCase()] ?? 'application/octet-stream', 'cache-control': 'no-cache' })
+        return res.end(body)
+      } catch {
+        return json(res, 404, { error: 'baseline not found' })
       }
     }
 
