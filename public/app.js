@@ -87,6 +87,15 @@ async function init() {
 
   await Promise.all([refreshSeries(), refreshHistory(info)])
   connectEvents()
+
+  // Open the newest run on load. Landing on a page full of placeholders reads
+  // as "it's broken", even when there is a finished run sitting one click away.
+  try {
+    const latest = await api('/api/runs?limit=1')
+    if (latest.runs?.length > 0) await showRun(latest.runs[0].id)
+  } catch {
+    /* an empty history is a valid state */
+  }
 }
 
 async function showJudgeInfo() {
@@ -288,13 +297,14 @@ function renderGallery(run) {
     const shot = el('div', 'shot')
     const isImage = /\.(svg|png|jpe?g|webp|gif)$/i.test(probe.artifactPath ?? '')
     // Prefer the render: it is literally what the judge looked at, and it is
-    // what a human would see.
-    const imagePath = probe.vision?.renderPath ?? probe.artifactPath
+    // what a human would see. URLs come from the server, never built from a
+    // disk path here.
+    const imageUrl = probe.vision?.renderUrl ?? probe.artifactUrl
     if (probe.artifactKind === 'broken') {
       shot.append(el('pre', null, '该轮产物无法渲染（归档内容不是有效 SVG，且已无法找回）'))
-    } else if (isImage && imagePath) {
+    } else if (isImage && imageUrl) {
       const img = el('img')
-      img.src = `/artifact/${imagePath}`
+      img.src = imageUrl
       img.alt = probe.label
       img.loading = 'lazy'
       // Old runs archived the reply text under a .svg name; the file is real
@@ -330,7 +340,7 @@ function renderGallery(run) {
       const warn = el('div', 'reason', `线上还出现: ${routed.join(', ')}`)
       body.append(warn)
     }
-    if (probe.wireGrade && probe.wireGrade.pass !== probe.grade?.pass) {
+    if (probe.wireGrade?.pass === true && probe.grade?.pass === false) {
       body.append(el('div', 'reason', `线上回答本应合格（${probe.wireGrade.score}），CLI 交付侧丢掉了`))
     }
 
@@ -393,7 +403,7 @@ async function selectProbe(run, probe) {
   box.innerHTML = ''
   $('#traffic-count').textContent = `${mine.length} 条`
   if (mine.length === 0) {
-    box.append(el('p', 'muted', '这一发没有经过抓包代理（检查 HTTPS_PROXY 注入）'))
+    box.append(el('p', 'muted', '这一发没有抓到请求：可能没走代理，或对应的 captures 文件已被清理'))
     return
   }
   for (const flow of mine) {

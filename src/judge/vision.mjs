@@ -52,6 +52,8 @@ function buildPrompt(subject) {
       '"vehicle" = the requested vehicle with the parts that make it that vehicle. ' +
       '"riding" = the animal is positioned on/in the vehicle in a plausible riding pose ' +
       '(pedals, seat, handlebars touched where the vehicle has them).',
+    '',
+    'Output the JSON object and nothing else. Do not analyse, do not explain.',
   ].join('\n')
 }
 
@@ -118,7 +120,9 @@ export async function judgeImage({ png, probeId, config = judgeConfig() }) {
         // Reasoning models spend output budget on the chain of thought first.
         // 400 was enough to think and leave `content` completely empty, which
         // looked exactly like a judge that refused to answer.
-        max_tokens: 1500,
+        // Reasoning models burn the budget on the chain of thought first; at
+        // 1500 one judge call ended with finish_reason=length and no verdict.
+        max_tokens: 2500,
         messages: [
           {
             role: 'user',

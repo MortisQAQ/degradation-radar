@@ -162,11 +162,74 @@ for (const run of runs) {
   run.summary.renderableArtifacts = svgProbes.filter((p) => p.artifactRenderable === true).length
 }
 
+// Give every stored probe a browser-facing URL, so the UI never has to build a
+// path out of a disk location.
+for (const run of runs) {
+  for (const probe of run.probes ?? []) {
+    probe.artifactUrl = artifactUrl(run.id, probe.artifactPath)
+    if (probe.vision?.renderPath) probe.vision.renderUrl = artifactUrl(run.id, probe.vision.renderPath)
+  }
+}
+
 const capture = await startCapture({ port: CAPTURE_PORT, certDir: join(ROOT, 'certs'), captureDir: join(ROOT, 'captures') })
 const flows = capture.flows
 const flowIndex = new Map()
 for (const f of flows) flowIndex.set(f.id, f)
 capture.onFlow((f) => flowIndex.set(f.id, f))
+
+/**
+ * Reload captured flows from disk at boot.
+ *
+ * They are already persisted as JSONL, but keeping them only in memory meant a
+ * restart silently emptied the traffic panel for every past run — the run
+ * record still listed flow ids that now resolved to nothing.
+ */
+async function loadCaptureHistory() {
+  const dir = join(ROOT, 'captures')
+  let names = []
+  try {
+    names = (await readdir(dir)).filter((n) => n.endsWith('.jsonl'))
+  } catch {
+    return
+  }
+  const files = []
+  for (const name of names) {
+    try {
+      const info = await stat(join(dir, name))
+      files.push({ name, mtime: info.mtimeMs })
+    } catch {
+      /* raced with cleanup */
+    }
+  }
+  files.sort((a, b) => a.mtime - b.mtime)
+  for (const { name } of files) {
+    let text = ''
+    try {
+      text = await readFile(join(dir, name), 'utf8')
+    } catch {
+      continue
+    }
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const flow = JSON.parse(line)
+        if (flow?.id && !flowIndex.has(flow.id)) {
+          flowIndex.set(flow.id, flow)
+          flows.push(flow)
+        }
+      } catch {
+        /* a torn line from an interrupted write */
+      }
+    }
+  }
+  // Bounded memory: the panel only ever shows a run's own flows.
+  while (flows.length > 30_000) {
+    const dropped = flows.shift()
+    if (dropped) flowIndex.delete(dropped.id)
+  }
+}
+
+await loadCaptureHistory()
 
 /** Proxy env for every provider, so a probe from any CLI is captured. */
 const CAPTURE_ENV = {
@@ -359,7 +422,9 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         grade.score = 0
         grade.failureReason = 'artifact-not-renderable'
       }
-      const wireGrade = sseText !== null && sseText !== result.text ? await gradeProbe(probe, sseText) : null
+      // Only meaningful when the CLI failed: it answers "did the wire contain a
+      // usable drawing that the orchestration layer then dropped?".
+      const wireGrade = grade.pass === false && sseText !== null ? await gradeProbe(probe, sseText) : null
 
       const record = {
         probeId,
@@ -387,6 +452,7 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         durationMs: result.durationMs ?? 0,
         stderrTail: result.stderrTail ?? '',
         artifactPath,
+        artifactUrl: artifactUrl(run.id, artifactPath),
         artifactKind,
         artifactRenderable,
         deliveredArtifacts: copied,
@@ -427,6 +493,7 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         probeId: record.probeId,
         config: judgeCfg,
       })
+      if (record.vision.renderPath) record.vision.renderUrl = artifactUrl(run.id, record.vision.renderPath)
       broadcast({ type: 'judge-done', runId: run.id, probeId: record.probeId, iteration: record.iteration, vision: record.vision })
     }
   }
@@ -512,8 +579,26 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
   '.json': 'application/json; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
+}
+
+/**
+ * Browser-facing artifact URL.
+ *
+ * Deliberately opaque: `/artifacts/<runId>/<file>`. An absolute Windows path
+ * in a URL ("/artifact/D:/…") carries a colon and a drive letter, and the
+ * browser refused to load it as an image while curl was happy — the kind of
+ * mismatch that makes a working backend look broken.
+ */
+function artifactUrl(runId, filePath) {
+  if (!filePath) return null
+  return `/artifacts/${runId}/${encodeURIComponent(basename(filePath))}`
 }
 
 function json(res, code, body) {
@@ -657,6 +742,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Artifacts (probe output files) are served from disk by absolute path.
+    if (path.startsWith('/artifacts/')) {
+      const rest = decodeURIComponent(path.slice('/artifacts/'.length))
+      const [runId, ...nameParts] = rest.split('/')
+      const name = nameParts.join('/')
+      if (!/^[A-Za-z0-9-]+$/.test(runId ?? '') || name === '' || name.includes('..')) {
+        return json(res, 400, { error: 'bad artifact path' })
+      }
+      const full = join(ROOT, 'data', 'artifacts', runId, name)
+      try {
+        const body = await readFile(full)
+        res.writeHead(200, {
+          'content-type': MIME[extname(full).toLowerCase()] ?? 'application/octet-stream',
+          'cache-control': 'no-cache',
+        })
+        return res.end(body)
+      } catch {
+        return json(res, 404, { error: 'artifact not found' })
+      }
+    }
+
     if (path.startsWith('/artifact/')) {
       const rel = decodeURIComponent(path.slice('/artifact/'.length))
       const full = resolve(ROOT, rel)
@@ -672,7 +777,14 @@ const server = http.createServer(async (req, res) => {
     if (!filePath.startsWith(PUBLIC)) return json(res, 403, { error: 'forbidden' })
     try {
       const body = await readFile(filePath)
-      res.writeHead(200, { 'content-type': MIME[extname(filePath)] ?? 'application/octet-stream' })
+      const ext = extname(filePath)
+      res.writeHead(200, {
+        'content-type': MIME[ext] ?? 'application/octet-stream',
+        // Without this the browser happily serves a stale index.html that
+        // points at a JS bundle from two versions ago — which looks exactly
+        // like "the page renders but nothing works".
+        'cache-control': ext === '.html' || ext === '.js' || ext === '.css' ? 'no-store' : 'no-cache',
+      })
       return res.end(body)
     } catch {
       return json(res, 404, { error: 'not found' })

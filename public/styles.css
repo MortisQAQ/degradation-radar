@@ -84,7 +84,8 @@ body {
   border-radius: 6px; padding: 6px 8px; font: inherit; min-width: 130px;
 }
 .controls input#model { min-width: 210px; font-family: var(--mono); }
-.controls select#probe { min-width: 180px; height: 76px; }
+.controls select#probe { min-width: 190px; height: 58px; padding: 2px 4px; }
+.controls select#probe option { padding: 2px 4px; }
 
 button {
   font: inherit; border-radius: 6px; border: 1px solid var(--line);
