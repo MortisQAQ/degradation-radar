@@ -172,6 +172,33 @@ for (const run of runs) {
   }
 }
 
+/**
+ * Recompute vision aggregates and verdicts for stored runs.
+ *
+ * The aggregation rule changed to "pairwise wins when present"; a stored
+ * summary that still reports the old number would contradict what the same
+ * code produces today. Recomputation is deterministic, so replaying it at boot
+ * is safer than trusting a snapshot.
+ */
+{
+  const ordered = [...runs].sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+  const seen = []
+  for (const run of ordered) {
+    if (!run.summary) continue
+    const agg = visionAggregateOf(run.probes ?? [])
+    run.summary.visionJudged = agg.count
+    run.summary.visionMode = agg.mode
+    run.summary.visionByMode = agg.byMode
+    run.summary.avgVisionScore = agg.avg
+    run.judge = { ...(run.judge ?? {}), mode: judgeModeOf(run.probes ?? []) }
+    run.judge.baselineIds = [
+      ...new Set((run.probes ?? []).map((p) => p.vision?.baseline?.id).filter(Boolean)),
+    ]
+    run.verdict = computeVerdict(run, seen.filter((r) => sameComparison(r, run)))
+    seen.push(run)
+  }
+}
+
 const capture = await startCapture({ port: CAPTURE_PORT, certDir: join(ROOT, 'certs'), captureDir: join(ROOT, 'captures') })
 const flows = capture.flows
 const flowIndex = new Map()
@@ -492,6 +519,8 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         artifactPath: resolve(ROOT, record.artifactPath),
         svgText,
         probeId: record.probeId,
+        // The reference must belong to the model under test.
+        model: run.model,
         config: judgeCfg,
       })
       if (record.vision.renderPath) record.vision.renderUrl = artifactUrl(run.id, record.vision.renderPath)
@@ -503,22 +532,11 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
   // Scores from pairwise and absolute judging live on different scales
   // (100/70/40/0 vs a continuous 0-100). Record which one produced this run so
   // the baseline comparison can refuse to mix them.
-  const modes = new Set(run.probes.map((p) => p.vision?.mode).filter(Boolean))
-  run.judge.mode = modes.size === 0 ? 'none' : modes.size === 1 ? [...modes][0] : 'mixed'
+  run.judge.mode = judgeModeOf(run.probes)
   run.judge.baselineIds = [...new Set(run.probes.map((p) => p.vision?.baseline?.id).filter(Boolean))]
   // History must be read before this run is appended, so a run is never
   // compared against itself.
-  run.verdict = computeVerdict(
-    run,
-    runs.filter(
-      (r) =>
-        r.provider === run.provider &&
-        r.model === run.model &&
-        // same ruler only
-        (r.judge?.mode ?? 'none') === run.judge.mode &&
-        JSON.stringify(r.judge?.baselineIds ?? []) === JSON.stringify(run.judge.baselineIds),
-    ),
-  )
+  run.verdict = computeVerdict(run, runs.filter((r) => sameComparison(r, run)))
   run.status = 'done'
   run.finishedAt = new Date().toISOString()
   await store.append(run)
@@ -544,6 +562,45 @@ function extractGeneratedText(capturedFlows) {
   return text.trim() === '' ? null : text
 }
 
+/**
+ * Vision score aggregate for one run.
+ *
+ * Pairwise (100/70/40/0) and absolute (0-100) are different rulers. Pairwise
+ * wins when present because it is anchored to a real reference — an unanchored
+ * number must not dilute it just for being more numerous.
+ */
+function visionAggregateOf(list) {
+  const judged = list.filter((p) => p.vision?.ok === true && typeof p.vision.score === 'number')
+  const byMode = {}
+  for (const p of judged) {
+    const mode = p.vision.mode === 'pairwise' ? 'pairwise' : 'absolute'
+    ;(byMode[mode] ??= []).push(p.vision.score)
+  }
+  const mode = byMode.pairwise ? 'pairwise' : byMode.absolute ? 'absolute' : null
+  const mean = (nums) => (nums.length === 0 ? null : Math.round(nums.reduce((a, b) => a + b, 0) / nums.length))
+  return {
+    count: judged.length,
+    mode,
+    avg: mode === null ? null : mean(byMode[mode]),
+    byMode: Object.fromEntries(Object.entries(byMode).map(([k, v]) => [k, { count: v.length, avg: mean(v) }])),
+  }
+}
+
+function judgeModeOf(list) {
+  const modes = new Set(list.map((p) => p.vision?.mode).filter(Boolean))
+  return modes.size === 0 ? 'none' : modes.size === 1 ? [...modes][0] : 'mixed'
+}
+
+/** Two runs may be compared only when the ruler is identical. */
+function sameComparison(a, b) {
+  return (
+    a.provider === b.provider &&
+    a.model === b.model &&
+    (a.judge?.mode ?? 'none') === (b.judge?.mode ?? 'none') &&
+    JSON.stringify(a.judge?.baselineIds ?? []) === JSON.stringify(b.judge?.baselineIds ?? [])
+  )
+}
+
 function summarize(run) {
   const list = run.probes
   const pass = list.filter((p) => p.grade?.pass).length
@@ -556,7 +613,7 @@ function summarize(run) {
   // model counts as "the route changed".
   const requestedButNeverServed = Boolean(run.model) && !routed.some((m) => sameModel(m, run.model))
   const foreign = foreignModels(run.model, routed)
-  const judged = list.filter((p) => p.vision?.ok === true && typeof p.vision.score === 'number')
+  const agg = visionAggregateOf(list)
   const renderable = list.filter((p) => p.artifactRenderable === true).length
   const drawingProbes = list.filter((p) => p.probeKind === 'svg').length
   return {
@@ -577,8 +634,10 @@ function summarize(run) {
     infraBlocked: list.filter((p) => p.grade?.metrics?.infra === true).length,
     // Vision is the headline number for the pelican probes; null means "nobody
     // looked", which is different from "it scored zero".
-    visionJudged: judged.length,
-    avgVisionScore: judged.length === 0 ? null : Math.round(judged.reduce((a, p) => a + p.vision.score, 0) / judged.length),
+    visionJudged: agg.count,
+    visionMode: agg.mode,
+    visionByMode: agg.byMode,
+    avgVisionScore: agg.avg,
     // Did we end up with a file a human could open? This is a gate, not a
     // detail: a pass rate computed over artifacts nobody can render is noise.
     renderableArtifacts: renderable,

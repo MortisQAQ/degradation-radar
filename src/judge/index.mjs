@@ -10,7 +10,7 @@ import { judgeProfile } from './profile.mjs'
  * Failures here are recorded, never thrown: a dead judge endpoint must not
  * destroy a completed probe run.
  */
-export async function judgeSvgArtifact({ artifactPath, svgText, probeId, config = judgeConfig() }) {
+export async function judgeSvgArtifact({ artifactPath, svgText, probeId, model, config = judgeConfig() }) {
   if (!subjectFor(probeId)) {
     return { skipped: 'probe has no visual subject' }
   }
@@ -35,7 +35,7 @@ export async function judgeSvgArtifact({ artifactPath, svgText, probeId, config 
   // Pairwise when a same-model reference exists: "compare to normal" is a
   // stronger question than "does this look like a pelican", and it is the one
   // that actually answers "is it degraded".
-  const baseline = baselineInfo(probeId)
+  const baseline = baselineInfo(probeId, model)
   let verdict
   if (baseline?.available) {
     verdict = await judgePair({

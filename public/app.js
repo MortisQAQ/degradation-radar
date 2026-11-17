@@ -348,15 +348,16 @@ function renderGallery(run) {
     if (probe.vision) body.append(visionRow(probe.vision))
 
     // Show what it was compared against: a score means nothing without the
-    // reference the judge used.
-    const baseline = (state.baselines ?? []).find((b) => b.probeId === probe.probeId && b.available)
-    if (baseline?.url) {
+    // reference the judge used. The id comes from the record, so it is always
+    // the exact reference that produced this score.
+    const baselineId = probe.vision?.baseline?.id
+    if (baselineId) {
       const ref = el('div', 'ref')
       const refImg = el('img')
-      refImg.src = baseline.url
-      refImg.alt = `参照：${baseline.id}`
+      refImg.src = `/baselines/${encodeURIComponent(baselineId)}.png`
+      refImg.alt = `参照：${baselineId}`
       refImg.loading = 'lazy'
-      ref.append(refImg, el('span', null, `参照 ${baseline.id}`))
+      ref.append(refImg, el('span', null, `参照 ${baselineId}`))
       body.append(ref)
     }
 

@@ -122,7 +122,10 @@ export async function judgeImage({ png, probeId, config = judgeConfig() }) {
         // looked exactly like a judge that refused to answer.
         // Reasoning models burn the budget on the chain of thought first; at
         // 1500 one judge call ended with finish_reason=length and no verdict.
-        max_tokens: 2500,
+        // 2500 was still not enough for a chatty judge; finish_reason=length
+        // with an empty answer counts as "no verdict", which is worse than a
+        // slightly truncated one.
+        max_tokens: 4000,
         messages: [
           {
             role: 'user',
@@ -273,7 +276,7 @@ export async function judgePair({ candidatePng, referencePng, probeId, config = 
       body: JSON.stringify({
         model: config.model,
         temperature: 0,
-        max_tokens: 2500,
+        max_tokens: 4000,
         messages: [
           {
             role: 'user',

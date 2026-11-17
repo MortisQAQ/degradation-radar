@@ -13,38 +13,51 @@ import { join, resolve } from 'node:path'
 const ROOT = resolve(import.meta.dirname, '..', '..')
 const BASELINE_DIR = join(ROOT, 'data', 'baselines')
 
-/** probeId -> baseline stem (model + thinking level + probe). */
-export const BASELINES = {
-  'pelican-bicycle': 'gemini-4-hydrogen-high.pelican-bicycle',
-}
+/** Probe families that have published, same-prompt references. */
+const REFERENCED_PROBES = new Set(['pelican-bicycle'])
 
-export function baselineInfo(probeId) {
-  const stem = BASELINES[probeId]
-  if (!stem) return null
-  const png = join(BASELINE_DIR, `${stem}.png`)
-  if (!existsSync(png)) {
+/**
+ * Resolve the reference for one (probe, model) pair.
+ *
+ * The reference must come from the *same* model — comparing argon against a
+ * hydrogen drawing would answer a different question ("argon vs hydrogen")
+ * while pretending to answer "is argon degraded".
+ */
+export function baselineInfo(probeId, model) {
+  if (!REFERENCED_PROBES.has(probeId)) return null
+  const requested = String(model ?? '').toLowerCase().trim()
+  if (requested === '') return null
+
+  // gemini-4-argon-high -> gemini-4-argon / high ; also accept a bare family id.
+  const thinking = /\b(high|medium|low|minimal|xhigh)$/.exec(requested)?.[1] ?? 'high'
+  const family = requested.replace(/-(?:high|medium|low|minimal|xhigh)$/, '')
+  const candidates = [`${requested}.${probeId}`, `${family}-${thinking}.${probeId}`, `${family}-high.${probeId}`]
+  const stem = candidates.find((c) => existsSync(join(BASELINE_DIR, `${c}.png`)))
+  if (!stem) {
     return {
       probeId,
-      stem,
+      model: requested,
       available: false,
-      hint: 'run: node scripts/fetch-baseline.mjs',
+      hint: `no published ${family} reference — run: node scripts/fetch-baseline.mjs`,
     }
   }
+  const png = join(BASELINE_DIR, `${stem}.png`)
   return {
     probeId,
+    model: requested,
     stem,
     available: true,
     id: stem,
     pngPath: png,
     png: readFileSync(png),
-    source: 'simonwillison.net/static/2026/gemini-4-pelicans.html (thinking=high × gemini-4-hydrogen)',
+    source: `simonwillison.net/static/2026/gemini-4-pelicans.html (${stem})`,
   }
 }
 
-export function listBaselines(probeIds) {
+export function listBaselines(probeIds, model) {
   return probeIds.map((id) => {
-    const info = baselineInfo(id)
+    const info = baselineInfo(id, model)
     if (!info) return { probeId: id, available: false, hint: 'no published same-model reference' }
-    return { probeId: id, available: info.available, id: info.id, hint: info.hint }
+    return { probeId: id, available: info.available, id: info.id, hint: info.hint, model: info.model }
   })
 }

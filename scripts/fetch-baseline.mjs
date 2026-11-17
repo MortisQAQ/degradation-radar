@@ -18,7 +18,7 @@ import { renderSvg } from '../src/judge/render.mjs'
 const ROOT = resolve(import.meta.dirname, '..')
 const OUT = join(ROOT, 'data', 'baselines')
 const PAGE = 'https://static.simonwillison.net/static/2026/gemini-4-pelicans.html'
-const MODEL = 'gemini-4-hydrogen'
+const MODELS = ['gemini-4-hydrogen', 'gemini-4-argon', 'gemini-4-carbon']
 const THINKING = 'high'
 
 async function main() {
@@ -39,19 +39,31 @@ async function main() {
   })
 
   const modelColumns = columns.filter((c) => c.startsWith('gemini-4-'))
-  const ci = modelColumns.indexOf(MODEL)
   const ri = rows.indexOf(THINKING)
-  if (ci < 0 || ri < 0) throw new Error(`cell not found: model=${MODEL} thinking=${THINKING}`)
-  const cell = cells[ri * modelColumns.length + ci]
-  if (!cell?.base64) throw new Error('cell has no embedded svg')
-
-  const svg = Buffer.from(cell.base64, 'base64').toString('utf8')
+  if (ri < 0) throw new Error(`thinking level not found: ${THINKING}`)
   await mkdir(OUT, { recursive: true })
-  const stem = `${MODEL}-${THINKING}.pelican-bicycle`
-  fs.writeFileSync(join(OUT, `${stem}.svg`), svg)
 
-  const render = await renderSvg(svg)
-  fs.writeFileSync(join(OUT, `${stem}.png`), render.png)
+  const written = []
+  for (const model of MODELS) {
+    const ci = modelColumns.indexOf(model)
+    if (ci < 0) {
+      console.warn(`  skip ${model}: column missing`)
+      continue
+    }
+    const cell = cells[ri * modelColumns.length + ci]
+    if (!cell?.base64) {
+      console.warn(`  skip ${model}: cell has no embedded svg`)
+      continue
+    }
+    const svg = Buffer.from(cell.base64, 'base64').toString('utf8')
+    const stem = `${model}-${THINKING}.pelican-bicycle`
+    fs.writeFileSync(join(OUT, `${stem}.svg`), svg)
+    const render = await renderSvg(svg)
+    fs.writeFileSync(join(OUT, `${stem}.png`), render.png)
+    written.push({ model, stem, bytes: svg.length, caption: cell.caption, size: `${render.width}x${render.height}` })
+    console.log(`  wrote ${stem}.svg (${svg.length}B) + .png (${render.width}x${render.height})`)
+  }
+  if (written.length === 0) throw new Error('no baselines extracted')
 
   fs.writeFileSync(
     join(OUT, 'PROVENANCE.md'),
@@ -63,9 +75,11 @@ async function main() {
       `- 原始 SVG gist: ${gist}`,
       `- 抓取时间: ${new Date().toISOString()}`,
       '- 逐字 prompt: `Generate an SVG of a pelican riding a bicycle`',
-      `- 取用单元格: 思考档 \`${THINKING}\` × 模型 \`${MODEL}\``,
-      `- 页面自有统计: ${cell.caption}`,
-      `- 本地文件: \`${stem}.svg\` / \`${stem}.png\`（${render.width}×${render.height}）`,
+      `- 取用单元格: 思考档 \`${THINKING}\` × 模型 ${written.map((w) => '`' + w.model + '`').join(' / ')}`,
+      '',
+      '| 模型 | 文件 | 页面自有统计 |',
+      '|---|---|---|',
+      ...written.map((w) => `| \`${w.model}\` | \`${w.stem}.svg\` / \`.png\`（${w.size}） | ${w.caption} |`),
       '',
       '## 用途',
       '成对比较（pairwise）的参照图：判官同时看这张参考图和被测图，回答「相对同模型',
@@ -74,11 +88,12 @@ async function main() {
       '## 注意',
       '这条是 Simon 通过 API 直接跑的，与本机 agy CLI 的编排层不同（系统提示、工具集、',
       '模式都不一样）。它代表「同模型不受编排层干扰时的水平」，不代表 agy 的默认行为。',
-      '只有 pelican-bicycle 有公开可比的参照；其余变体仍然使用绝对评分。',
+      '参照按「请求的模型」选择：测 argon 就用 argon 的参照，测 hydrogen 就用 hydrogen 的，',
+      '绝不拿另一个模型的图当自己的锚点。没有对应模型参照的探针/模型仍然使用绝对评分。',
     ].join('\n'),
   )
 
-  console.log(`wrote ${stem}.svg (${svg.length}B) and .png (${render.width}x${render.height})`)
+  console.log(`done: ${written.length} baseline(s) in ${OUT}`)
 }
 
 await main()
