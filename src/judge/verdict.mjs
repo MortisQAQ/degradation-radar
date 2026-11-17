@@ -66,9 +66,14 @@ export function computeVerdict(run, history = []) {
     reasons.push(`请求的模型 ${run.model} 在网线上一次都没被真正服务——路由被换掉了`)
   }
 
-  const extra = (s.returnedModels ?? []).filter((m) => m !== run.model)
+  // Same-family variants (tiered-/preview-) are not a routing change.
+  const extra = s.foreignModels ?? (s.returnedModels ?? []).filter((m) => m !== run.model)
   if (extra.length > 0) {
     reasons.push(`线上还出现了 ${extra.join(', ')} 的调用（辅助任务或路由降级，需结合上下文判断）`)
+  }
+
+  if ((s.wrongFormat ?? 0) > 0) {
+    reasons.push(`${s.wrongFormat} 个探针没有交回 SVG（交付了栅格图或明确表示无法产出 SVG），按口径记失败`)
   }
 
   if (basePrimary === null) {

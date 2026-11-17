@@ -61,6 +61,21 @@ export function createStore(root = 'data') {
       // Served to the browser as /artifact/<posix-relative-to-cwd>.
       return path.split('\\').join('/')
     },
+
+    /**
+     * Persist a binary artifact (a delivered JPEG, a render, …).
+     *
+     * Text-only archiving is how a 500 KB drawing the model actually produced
+     * ends up with nothing but a one-line "see this file" left behind.
+     */
+    async saveBinary(runId, name, buffer) {
+      await ensure()
+      const dir = join(artifactDir, runId)
+      await mkdir(dir, { recursive: true })
+      const path = join(dir, name)
+      await writeFile(path, buffer)
+      return path.split('\\').join('/')
+    },
   }
 }
 

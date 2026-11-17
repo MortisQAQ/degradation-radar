@@ -9,6 +9,10 @@ export const PROBES = {
     id: 'pelican-bicycle',
     label: '鹈鹕骑自行车',
     kind: 'svg',
+    // Every drawing probe names the file it must produce. Without this the CLI
+    // is free to drop the artifact in its own brain directory, and the run has
+    // to reconstruct where it went after the fact.
+    saveAs: 'pelican-bicycle.svg',
     // Verbatim, the canonical Simon Willison wording. Do not polish it: the
     // whole point is that this exact string has years of public baselines.
     prompt: 'Generate an SVG of a pelican riding a bicycle.',
@@ -17,18 +21,21 @@ export const PROBES = {
     id: 'pelican-skateboard',
     label: '鹈鹕踩滑板',
     kind: 'svg',
+    saveAs: 'pelican-skateboard.svg',
     prompt: 'Generate an SVG of a pelican riding a skateboard.',
   },
   'pelican-tractor': {
     id: 'pelican-tractor',
     label: '鹈鹕开拖拉机',
     kind: 'svg',
+    saveAs: 'pelican-tractor.svg',
     prompt: 'Generate an SVG of a pelican driving a tractor.',
   },
   'pelican-rocket': {
     id: 'pelican-rocket',
     label: '鹈鹕搭火箭',
     kind: 'svg',
+    saveAs: 'pelican-rocket.svg',
     prompt: 'Generate an SVG of a pelican riding a rocket.',
   },
   'json-strict': {
@@ -57,6 +64,7 @@ export const PROBES = {
     id: 'code-lis',
     label: '代码（LIS）',
     kind: 'code',
+    saveAs: 'lis.py',
     prompt:
       'Write a Python function `lis(nums)` that returns the length of the longest strictly ' +
       'increasing subsequence in O(n log n). Output only one fenced python code block.',

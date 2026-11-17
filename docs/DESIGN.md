@@ -190,7 +190,9 @@ SVG 产物 ──isolateSvg──▶ 只截取一段 <svg>…</svg> ──Chromi
 
 1. **产物不在工作区**：agy 把 SVG 写进自己的 brain 目录（`~/.gemini/antigravity-cli/brain/<会话>/`）
    并在回答里给 `file:///...` 链接。只扫工作区 → 判定「没交付」→ 冤枉成降智 0 分。
-   现在会从回答文本里反查文件链接并读取。
+   **正解是别让它自己选路径**：每个探针现在有独立的 scratch 目录，prompt 里点名
+   `./pelican-tractor.svg`，产物直接落在我们手上。`file://` 反查降级为兜底，
+   `scripts/backfill-artifacts.mjs` 负责把这类历史轮次从 brain 目录捞回来。
 2. **`</svg>` 之后全是散文**：整段塞进 `<div>` 后浏览器把 Markdown 也画出来，判官如实回答
    「这张图只有文字」。产物一律截断到 `</svg>`。
 3. **判官会复述 prompt 里的模板**：`"pelican": 0 | 1 | 2` 不是合法 JSON，第一版抓到它直接解析失败。

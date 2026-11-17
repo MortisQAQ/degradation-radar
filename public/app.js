@@ -286,15 +286,21 @@ function renderGallery(run) {
   for (const probe of probes) {
     const card = el('div', `card ${probe.grade?.pass ? 'pass' : 'fail'}`)
     const shot = el('div', 'shot')
-    const isSvg = probe.artifactPath?.endsWith('.svg')
+    const isImage = /\.(svg|png|jpe?g|webp|gif)$/i.test(probe.artifactPath ?? '')
     // Prefer the render: it is literally what the judge looked at, and it is
     // what a human would see.
     const imagePath = probe.vision?.renderPath ?? probe.artifactPath
-    if (isSvg && imagePath) {
+    if (isImage && imagePath) {
       const img = el('img')
       img.src = `/artifact/${imagePath}`
       img.alt = probe.label
       img.loading = 'lazy'
+      // Old runs archived the reply text under a .svg name; the file is real
+      // but not renderable. Say so instead of showing a broken-image icon.
+      img.addEventListener('error', () => {
+        shot.innerHTML = ''
+        shot.append(el('pre', null, '当轮没有可渲染的产物（归档内容不是有效 SVG）'))
+      })
       shot.append(img)
     } else {
       shot.append(el('pre', null, (probe.text ?? '').slice(0, 600) || '(空)'))
@@ -308,6 +314,7 @@ function renderGallery(run) {
     body.append(title)
 
     if (!probe.grade?.pass) body.append(el('div', 'reason', probe.grade?.failureReason ?? 'failed'))
+    if (probe.artifactKind === 'image') body.append(el('div', 'reason', '交付的是栅格图而不是 SVG —— 按口径记失败'))
 
     const kv = el('div', 'kv')
     kv.append(el('span', null, `出 ${fmt(probe.usage?.output_tokens)}/${fmt(probe.usage?.thoughtsTokenCount ?? probe.usage?.thinking_tokens)}`))

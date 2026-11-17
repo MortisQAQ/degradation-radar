@@ -4,8 +4,8 @@
 // fight over quota, over the capture proxy and over wall-clock, and the
 // resulting latency/noise makes a "degradation" out of nothing.
 import http from 'node:http'
-import { readFile, readdir, readFile as readFileAsync, stat } from 'node:fs/promises'
-import { extname, join, normalize, resolve } from 'node:path'
+import { mkdir, readFile, readdir, readFile as readFileAsync, stat } from 'node:fs/promises'
+import { basename, extname, join, normalize, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import { startCapture } from './capture/mitm.mjs'
@@ -17,6 +17,7 @@ import { judgeSvgArtifact } from './judge/index.mjs'
 import { judgeConfig, judgeHealth } from './judge/vision.mjs'
 import { judgeProfile } from './judge/profile.mjs'
 import { computeVerdict } from './judge/verdict.mjs'
+import { foreignModels, sameModel } from './model-alias.mjs'
 
 const PORT = Number(process.env.RADAR_PORT ?? 7417)
 const CAPTURE_PORT = Number(process.env.RADAR_CAPTURE_PORT ?? 8899)
@@ -115,6 +116,19 @@ async function harvestArtifacts(dir, before) {
 const store = createStore(join(ROOT, 'data'))
 const runs = await store.load()
 
+// Legacy records predate `artifactKind`. Infer it once at load time so the UI
+// and the summary do not have to special-case a field that was simply absent.
+for (const run of runs) {
+  for (const probe of run.probes ?? []) {
+    if (probe.artifactKind || !probe.artifactPath) continue
+    probe.artifactKind = /\.svg$/i.test(probe.artifactPath)
+      ? 'svg'
+      : /\.(png|jpe?g|webp|gif)$/i.test(probe.artifactPath)
+        ? 'image'
+        : 'text'
+  }
+}
+
 const capture = await startCapture({ port: CAPTURE_PORT, certDir: join(ROOT, 'certs'), captureDir: join(ROOT, 'captures') })
 const flows = capture.flows
 const flowIndex = new Map()
@@ -198,14 +212,23 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
     if (!probe) continue
     for (let i = 0; i < repeat; i++) {
       const flowStart = flows.length
-      const before = await snapshotDir(cwd)
+      // One scratch directory per probe: the CLI writes its artifact to a path
+      // we chose, so "where did the file go" stops being a forensic question.
+      const scratch = join(cwd, run.id, `${probeId}-${i}`)
+      await mkdir(scratch, { recursive: true })
+      const prompt =
+        probe.saveAs === undefined
+          ? probe.prompt
+          : `${probe.prompt}\n\nWrite the result to ./${probe.saveAs} in the current working directory. ` +
+            'Do not ask for confirmation; just create the file and then say you are done.'
+      const before = await snapshotDir(scratch)
       let result
       try {
         result = await runProbe({
           providerId: provider,
-          prompt: probe.prompt,
+          prompt,
           model,
-          cwd,
+          cwd: scratch,
           env: CAPTURE_ENV,
           timeoutMs: Number(process.env.RADAR_PROBE_TIMEOUT_MS ?? 600_000),
         })
@@ -214,11 +237,19 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
       }
 
       const capturedThisProbe = flows.slice(flowStart)
-      const harvested = await harvestArtifacts(cwd, before)
+      const harvested = await harvestArtifacts(scratch, before)
       const linked = await harvestReferenced(result.text)
-      // Grade what was delivered: inline text, files written into the
-      // workspace, or files the CLI linked to elsewhere on disk.
-      const extra = [harvested.text, linked.text].filter((t) => t !== '').join('\n\n')
+      // The named file is the delivery. Everything else is a fallback for a CLI
+      // that ignored the instruction.
+      let named = null
+      if (probe.saveAs !== undefined) {
+        try {
+          named = { path: join(scratch, probe.saveAs), text: await readFileAsync(join(scratch, probe.saveAs), 'utf8') }
+        } catch {
+          named = null
+        }
+      }
+      const extra = [named?.text, harvested.text, linked.text].filter((t) => typeof t === 'string' && t !== '').join('\n\n')
       const delivered = extra === '' ? result.text : `${result.text}\n\n${extra}`
       const returnedModels = [
         ...new Set(
@@ -235,14 +266,47 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
       const grade = await gradeProbe(probe, delivered, result.error ?? result.stderrTail)
       const wireGrade = sseText !== null && sseText !== result.text ? await gradeProbe(probe, sseText) : null
 
+      // Archive every raw file the CLI produced — binaries included. Copying
+      // only text is how a 500 KB drawing survives nowhere except a scratch
+      // directory the vendor is free to prune.
+      const copied = []
+      const seenFiles = new Set()
+      const produced = [...new Set([...(named ? [named.path] : []), ...harvested.files, ...linked.files])]
+      for (const file of produced) {
+        if (seenFiles.has(file)) continue
+        seenFiles.add(file)
+        try {
+          const buf = await readFileAsync(file)
+          const kind = /\.(jpe?g|png|webp|gif)$/i.test(file) ? 'image' : /\.svg$/i.test(file) ? 'svg' : 'text'
+          const rel = await store.saveBinary(run.id, `raw-${basename(file)}`, buf)
+          copied.push({ kind, path: rel, bytes: buf.length, source: file })
+        } catch {
+          /* the file vanished between being linked and being read */
+        }
+      }
+
       let artifactPath = null
+      let artifactKind = 'text'
       if (probe.kind === 'svg') {
-        // Cut at the closing tag: everything after it is commentary, and a
-        // browser would happily paint that commentary into the screenshot.
         const start = delivered.search(/<svg[\s>]/i)
-        const close = delivered.lastIndexOf('</svg>')
-        const svg = start < 0 ? delivered : close > start ? delivered.slice(start, close + 6) : delivered.slice(start)
-        artifactPath = await store.saveArtifact(run.id, `${probeId}-${i}`, 'svg', svg)
+        if (start >= 0) {
+          // Cut at the closing tag: everything after it is commentary, and a
+          // browser would happily paint that commentary into the screenshot.
+          const close = delivered.lastIndexOf('</svg>')
+          const svg = close > start ? delivered.slice(start, close + 6) : delivered.slice(start)
+          artifactPath = await store.saveArtifact(run.id, `${probeId}-${i}`, 'svg', svg)
+          artifactKind = 'svg'
+        } else {
+          // No markup at all: keep whatever was actually delivered, so an
+          // image-producing run still leaves an image behind.
+          const image = copied.find((c) => c.kind === 'image')
+          if (image) {
+            artifactPath = image.path
+            artifactKind = 'image'
+          } else {
+            artifactPath = await store.saveArtifact(run.id, `${probeId}-${i}`, 'txt', delivered)
+          }
+        }
       } else {
         artifactPath = await store.saveArtifact(run.id, `${probeId}-${i}`, 'txt', delivered)
       }
@@ -253,7 +317,11 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         iteration: i,
         startedAt: new Date().toISOString(),
         text: result.text,
-        deliveredFiles: [...harvested.files, ...linked.files].map((f) =>
+        promptSent: prompt,
+        // Recorded so a later "did the prompt change?" question has an answer:
+        // the canonical line is untouched, the save instruction is appended.
+        promptVariant: probe.saveAs === undefined ? 'canonical' : 'save-to-workspace',
+        deliveredFiles: produced.map((f) =>
           f.startsWith(ROOT) ? f.slice(ROOT.length + 1).split('\\').join('/') : f.split('\\').join('/'),
         ),
         grade,
@@ -268,6 +336,8 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         durationMs: result.durationMs ?? 0,
         stderrTail: result.stderrTail ?? '',
         artifactPath,
+        artifactKind,
+        deliveredArtifacts: copied,
         flowIds: capturedThisProbe.map((f) => f.id),
       }
       run.probes.push(record)
@@ -349,7 +419,10 @@ function summarize(run) {
   const thinking = list.map((p) => p.usage?.thinking_tokens ?? 0)
   const latencies = list.map((p) => p.durationMs ?? 0)
   const routed = [...new Set(list.flatMap((p) => p.routedModels ?? []))]
-  const requestedButNeverServed = run.model && !routed.includes(run.model)
+  // tiered-/preview- variants are the same model; only a genuinely different
+  // model counts as "the route changed".
+  const requestedButNeverServed = Boolean(run.model) && !routed.some((m) => sameModel(m, run.model))
+  const foreign = foreignModels(run.model, routed)
   const judged = list.filter((p) => p.vision?.ok === true && typeof p.vision.score === 'number')
   return {
     total: list.length,
@@ -360,7 +433,9 @@ function summarize(run) {
     avgThinkingTokens: Math.round(thinking.reduce((a, b) => a + b, 0) / Math.max(1, list.length)),
     avgLatencyMs: Math.round(latencies.reduce((a, b) => a + b, 0) / Math.max(1, list.length)),
     returnedModels: routed,
+    foreignModels: foreign,
     requestedModelNeverServed: Boolean(requestedButNeverServed),
+    wrongFormat: list.filter((p) => p.grade?.metrics?.wrongFormat === true).length,
     failures: list.filter((p) => !p.grade?.pass).map((p) => `${p.probeId}#${p.iteration}: ${p.grade?.failureReason ?? 'unknown'}`),
     // Runs that never reached the model must be excluded from rate maths:
     // including them turns an expired login into a "100% degradation" event.
