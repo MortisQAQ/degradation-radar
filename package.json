@@ -1,0 +1,15 @@
+{
+  "name": "degradation-radar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Detect intelligence degradation in LLM subscriptions (Codex / Claude Code / Antigravity) by driving the real CLIs and observing their real traffic.",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "certs": "pwsh -NoProfile -File scripts/make-certs.ps1",
+    "smoke:capture": "node scripts/smoke-capture.mjs",
+    "smoke:run": "node scripts/smoke-run.mjs"
+  }
+}

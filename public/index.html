@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Degradation Radar — 订阅降智监测</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot" id="live-dot"></span>
+        <h1>Degradation Radar</h1>
+        <span class="sub">真实 CLI · 鹈鹕探针 · 上行抓包</span>
+      </div>
+      <div class="capture" id="capture-info">capture —</div>
+    </header>
+
+    <section class="controls">
+      <label>服务
+        <select id="provider"></select>
+      </label>
+      <label>模型
+        <input id="model" placeholder="gemini-4-hydrogen-high" spellcheck="false" />
+      </label>
+      <label>探针
+        <select id="probe" multiple size="1"></select>
+      </label>
+      <label>重复
+        <input id="repeat" type="number" min="1" max="5" value="1" />
+      </label>
+      <button id="run" class="primary">跑一轮</button>
+      <span class="queue" id="queue"></span>
+    </section>
+
+    <main class="grid">
+      <aside class="panel services">
+        <h2>服务健康</h2>
+        <div id="services" class="service-list"><p class="muted">还没有足够的样本建立基线</p></div>
+        <h2>历史轮次</h2>
+        <div id="history" class="history"></div>
+      </aside>
+
+      <section class="panel gallery-wrap">
+        <div class="panel-head">
+          <h2 id="gallery-title">探针结果</h2>
+          <div id="run-meta" class="muted"></div>
+        </div>
+        <div id="gallery" class="gallery">
+          <p class="muted empty">选择一轮运行，或点「跑一轮」开始。<br />
+          每个探针都会显示：合格率判定、确定性得分、真实返回模型、以及那条请求在网线上的原文。</p>
+        </div>
+      </section>
+
+      <aside class="panel traffic">
+        <div class="panel-head">
+          <h2>上行流量</h2>
+          <span class="muted" id="traffic-count"></span>
+        </div>
+        <div id="flows" class="flow-list"><p class="muted">选中一个探针后显示它经过的请求</p></div>
+      </aside>
+    </main>
+
+    <div id="drawer" class="drawer" hidden>
+      <div class="drawer-head">
+        <strong id="drawer-title">flow</strong>
+        <div class="tabs">
+          <button data-tab="req" class="active">请求</button>
+          <button data-tab="resp">上游回答</button>
+          <button data-tab="meta">元数据</button>
+        </div>
+        <button id="drawer-close" class="ghost">关闭</button>
+      </div>
+      <pre id="drawer-body" class="drawer-body"></pre>
+    </div>
+
+    <footer class="statusbar"><span id="log">就绪</span></footer>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

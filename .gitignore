@@ -1,0 +1,21 @@
+# Local CA + MITM leaf certificate. leaf.pfx holds a private key and must
+# never leave this machine.
+certs/
+
+# Raw captured traffic: real prompts, real completions, account metadata.
+captures/
+
+# Run history, artifacts and the probe scratch workspace.
+data/
+
+# Build/run noise.
+node_modules/
+*.log
+server.err
+server.log
+
+# Probe output that landed in the repo root during development.
+pelican_on_bicycle.svg
+
+.DS_Store
+Thumbs.db
