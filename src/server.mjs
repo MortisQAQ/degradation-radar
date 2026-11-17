@@ -259,6 +259,35 @@ async function loadCaptureHistory() {
 
 await loadCaptureHistory()
 
+/**
+ * Backfill `servedModels` for runs recorded before the field existed.
+ *
+ * The flow ids are on disk, and the flows themselves are now reloaded, so the
+ * server-reported modelVersion can be recovered for old runs instead of
+ * leaving them blank.
+ */
+for (const run of runs) {
+  let touched = false
+  for (const probe of run.probes ?? []) {
+    if ((probe.servedModels ?? []).length > 0) continue
+    const served = new Set()
+    for (const id of probe.flowIds ?? []) {
+      const flow = flowIndex.get(id)
+      for (const ev of flow?.respSummary?.events ?? []) {
+        const version = ev?.response?.modelVersion
+        if (typeof version === 'string' && version !== '') served.add(version)
+      }
+    }
+    if (served.size > 0) {
+      probe.servedModels = [...served]
+      touched = true
+    }
+  }
+  if (touched && run.summary) {
+    run.summary.servedModels = [...new Set((run.probes ?? []).flatMap((p) => p.servedModels ?? []))]
+  }
+}
+
 /** Proxy env for every provider, so a probe from any CLI is captured. */
 const CAPTURE_ENV = {
   HTTPS_PROXY: `http://127.0.0.1:${CAPTURE_PORT}`,
@@ -383,6 +412,7 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         ),
       ]
       const sseText = extractGeneratedText(capturedThisProbe)
+      const servedModels = extractServedModels(capturedThisProbe)
 
       // (grading happens below, against the archived artifact)
       // Archive every raw file the CLI produced — binaries included. Copying
@@ -473,6 +503,7 @@ async function executeRun({ provider, model, probeIds, repeat, cwd }) {
         usage: result.usage ?? null,
         returnedModel: result.returnedModel ?? null,
         routedModels: returnedModels,
+        servedModels,
         finish: result.finish ?? null,
         error: result.error ?? null,
         timedOut: Boolean(result.timedOut),
@@ -609,6 +640,7 @@ function summarize(run) {
   const thinking = list.map((p) => p.usage?.thinking_tokens ?? 0)
   const latencies = list.map((p) => p.durationMs ?? 0)
   const routed = [...new Set(list.flatMap((p) => p.routedModels ?? []))]
+  const served = [...new Set(list.flatMap((p) => p.servedModels ?? []))]
   // tiered-/preview- variants are the same model; only a genuinely different
   // model counts as "the route changed".
   const requestedButNeverServed = Boolean(run.model) && !routed.some((m) => sameModel(m, run.model))
@@ -625,6 +657,7 @@ function summarize(run) {
     avgThinkingTokens: Math.round(thinking.reduce((a, b) => a + b, 0) / Math.max(1, list.length)),
     avgLatencyMs: Math.round(latencies.reduce((a, b) => a + b, 0) / Math.max(1, list.length)),
     returnedModels: routed,
+    servedModels: served,
     foreignModels: foreign,
     requestedModelNeverServed: Boolean(requestedButNeverServed),
     wrongFormat: list.filter((p) => p.grade?.metrics?.wrongFormat === true).length,

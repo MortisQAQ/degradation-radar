@@ -341,6 +341,18 @@ function renderGallery(run) {
       const warn = el('div', 'reason', `线上还出现: ${routed.join(', ')}`)
       body.append(warn)
     }
+    // What the server said it was, versus what we asked for. `-trial` here is
+    // a routing fact reported by the service, not a guess about quality.
+    // `gemini-4-argon-high` -> served as `gemini-4-argon` is just the effort
+    // suffix; `gemini-4-argon-trial` is a different channel and worth flagging.
+    const requested = String(run.model ?? '').toLowerCase()
+    const sameFamily = (m) => m === requested || m === requested.replace(/-(high|medium|low|xhigh)$/, '')
+    const offChannel = (probe.servedModels ?? []).filter((m) => m !== '' && !sameFamily(m.toLowerCase()))
+    if (offChannel.length > 0) {
+      const line = el('div', 'reason', `服务端应答: ${offChannel.join(', ')}`)
+      if (offChannel.some((m) => /-trial|-preview|-experimental/i.test(m))) line.textContent += '（非正式通道）'
+      body.append(line)
+    }
     if (probe.wireGrade?.pass === true && probe.grade?.pass === false) {
       body.append(el('div', 'reason', `线上回答本应合格（${probe.wireGrade.score}），CLI 交付侧丢掉了`))
     }
