@@ -29,6 +29,9 @@ const PROBE_IDS = arg('probes', 'RADAR_SCHEDULE_PROBES', 'pelican-bicycle').spli
 const REPEAT = Number(arg('repeat', 'RADAR_SCHEDULE_REPEAT', '1'))
 const LOG = join(ROOT, 'data', 'scheduled.log')
 const RUN_TIMEOUT_MS = Number(arg('timeout', 'RADAR_SCHEDULE_TIMEOUT_MS', '900000'))
+// Off by default. A scheduled job that silently leaves a detached node server
+// running is a surprise the operator did not ask for; make it an explicit opt-in.
+const AUTOSTART = process.argv.includes('--autostart') || process.env.RADAR_SCHEDULE_AUTOSTART === '1'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const stamp = () => new Date().toISOString().replace('T', ' ').slice(0, 19)
@@ -50,6 +53,12 @@ async function serverUp() {
 
 async function ensureServer() {
   if (await serverUp()) return 'already running'
+  if (!AUTOSTART) {
+    throw new Error(
+      `radar server 未运行（${BASE} 不可达）。先手动启动：node src/server.mjs；` +
+        '若确实希望本脚本自行拉起，加 --autostart（或设 RADAR_SCHEDULE_AUTOSTART=1）',
+    )
+  }
   // Detached: the scheduled task must exit, the server must not.
   const child = spawn(process.execPath, [join(ROOT, 'src', 'server.mjs')], {
     cwd: ROOT,

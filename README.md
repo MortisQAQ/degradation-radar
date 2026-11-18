@@ -94,7 +94,8 @@ pwsh -NoProfile -File scripts/install-schedule.ps1 -EveryHours 2 -Model gemini-4
 [2026-11-18 05:57:11] OK bdca133f agy/gemini-4-hydrogen-high pass=1/1 vision=40 (pairwise) pelican-bicycle:rubric=87 vision=40/clearly_worse verdict=疑似降智
 ```
 
-服务没在跑时会自己拉起（detached），所以重启机器后第一次触发不需要人工干预。
+服务没在跑时**默认不会**自动拉起：脚本只写一行错误并退出，不会偷偷留下常驻 node 进程。
+需要它自己起就加 `--autostart`（或 `RADAR_SCHEDULE_AUTOSTART=1`）。
 想手动看一眼趋势：`node scripts/scheduled-probe.mjs --report`。
 
 ## 参照基准：和「正常水平」比，而不是凭空打分
