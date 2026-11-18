@@ -241,7 +241,35 @@ SVG 产物 ──isolateSvg──▶ 只截取一段 <svg>…</svg> ──Chromi
 2. **只有有公开同模型参照的探针才做成对**。`pelican-bicycle` 有，
    skateboard / tractor / rocket 没有，就老老实实标「绝对分」，不假装有基准。
 
-## 8. 尚未实现
+## 8. 定时跑：为什么是两个机制
+
+需求是「开机后每小时跑一次」。拆开看是两个不同权限的事：
+
+| 需求 | 实现 | 为什么不能合并 |
+|---|---|---|
+| 每小时 | `schtasks /SC HOURLY` | 不需要提权 |
+| 登录时 | `HKCU\...\Run` → `data\launch-probe.vbs` | `schtasks /SC ONLOGON` 需要管理员（实测 `Access is denied`）；启动文件夹在沙箱里被拒；Run 键两条都不是问题 |
+
+用「登录」而不是「开机」：探针驱动真实 agy CLI，需要用户会话读凭据。登录前的任务会以
+「看起来像模型挂了」的方式失败。
+
+### 8.1 踩出来的两个坑
+
+1. **`cmd /c` 包装会丢结果**：最初用 `cmd /d /s /c "set A=B& node script"` 传环境变量，
+   计划任务 `Last Result` 是 `-1073741510` = `STATUS_CONTROL_C_EXIT` —— 控制台消失时
+   连带杀掉了 node，结果是运行已经完成、日志那一行却没写。改成计划任务直接调 node、
+   参数走 `--model/--probes`，`Last Result: 0`。
+2. **VBS 拼接把路径拆行**：用数组拼接生成 launcher，写出来是
+   `shell.CurrentDirectory = "` / 路径 / `"` 三行，VBScript 直接报「未终止的字符串常量」。
+   改成 here-string 占位符替换后 `cscript` 退出码 0。
+
+### 8.2 定时任务不直接调 CLI
+
+调用的是服务端的 `/api/run`。直接 spawn agy 会绕开抓包代理和视觉判官，产出就只剩一段裸文本——
+那不是这个项目要的"结果"。服务没在跑时脚本会自己 detached 拉起，所以重启机器后第一次触发
+不需要人工干预。
+
+## 9. 尚未实现
 
 - h2 / gRPC 上游（当前 ALPN 固定 h1，若某厂商强制 h2 会退化）
 - 请求体压缩（zstd / gzip）自动解压后再记录

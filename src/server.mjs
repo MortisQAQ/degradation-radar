@@ -594,6 +594,24 @@ function extractGeneratedText(capturedFlows) {
 }
 
 /**
+ * Model versions the *server* reported in its own response frames.
+ *
+ * `reqSummary.model` is what we asked for; this is what answered. They are not
+ * the same field and not always the same value — agy asks for
+ * `gemini-4-argon-high` and the service answers as `gemini-4-argon-trial`.
+ */
+function extractServedModels(capturedFlows) {
+  const served = new Set()
+  for (const flow of capturedFlows) {
+    for (const ev of flow.respSummary?.events ?? []) {
+      const version = ev?.response?.modelVersion
+      if (typeof version === 'string' && version !== '') served.add(version)
+    }
+  }
+  return [...served]
+}
+
+/**
  * Vision score aggregate for one run.
  *
  * Pairwise (100/70/40/0) and absolute (0-100) are different rulers. Pairwise

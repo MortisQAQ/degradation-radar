@@ -71,6 +71,32 @@ curl -s localhost:7417/api/run -H 'content-type: application/json' \
 主指标是**首次交付合格率**：超时、截断、拒答、什么都没交付都算失败，而不是「无数据」。
 其次才是确定性分数、输出 token、思考 token、真实返回模型。
 
+## 定时跑（开机后每小时）
+
+```bash
+pwsh -NoProfile -File scripts/install-schedule.ps1        # 安装
+pwsh -NoProfile -File scripts/install-schedule.ps1 -Uninstall
+pwsh -NoProfile -File scripts/install-schedule.ps1 -EveryHours 2 -Model gemini-4-argon-high
+```
+
+装两处，因为权限路径不同：
+
+| 位置 | 作用 | 为什么这样 |
+|---|---|---|
+| `DegradationRadar-Hourly`（计划任务） | 每小时跑一次 | `schtasks /SC HOURLY` 不需要提权；`/IT` 保证只在你登录时跑 |
+| `HKCU\...\Run` → `data\launch-probe.vbs` | 登录即跑一次 | `schtasks /SC ONLOGON` 要管理员权限（实测 `Access is denied`）；启动文件夹在某些沙箱里被拒；Run 键两者都不是问题 |
+
+用「登录」而不是「开机」：探针驱动的是真实 agy CLI，需要你的用户会话读凭据。登录前的任务跑起来会以看起来像「模型挂了」的方式失败。
+
+每次运行写一行摘要到 `data/scheduled.log`：
+
+```
+[2026-11-18 05:57:11] OK bdca133f agy/gemini-4-hydrogen-high pass=1/1 vision=40 (pairwise) pelican-bicycle:rubric=87 vision=40/clearly_worse verdict=疑似降智
+```
+
+服务没在跑时会自己拉起（detached），所以重启机器后第一次触发不需要人工干预。
+想手动看一眼趋势：`node scripts/scheduled-probe.mjs --report`。
+
 ## 参照基准：和「正常水平」比，而不是凭空打分
 
 绝对评分只能回答「像不像一只鹈鹕」，没有锚点，同一张图两次调用能差 17 分。

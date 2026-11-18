@@ -16,6 +16,19 @@ const LEVELS = {
 
 export { LEVELS }
 
+/**
+ * Auxiliary models agy calls on its own, and what they actually do.
+ *
+ * Verified from captures: flash-lite requests carry requestId
+ * `agent_monitoring/<uuid>`, no tools, and a "safety and security rater"
+ * prompt — it reviews pending tool calls, it does not generate the answer.
+ * Saying "routing downgrade" here would put a wrong explanation in the log
+ * every single hour.
+ */
+const KNOWN_AUX = {
+  'gemini-3.5-flash-lite': 'agy 的工具调用安全审查（agent_monitoring 通道，不生成内容）',
+}
+
 /** Median of the trailing window, ignoring runs that never reached the model. */
 function trailingMedian(history, pick) {
   const values = history
@@ -79,8 +92,15 @@ export function computeVerdict(run, history = []) {
 
   // Same-family variants (tiered-/preview-) are not a routing change.
   const extra = s.foreignModels ?? (s.returnedModels ?? []).filter((m) => m !== run.model)
-  if (extra.length > 0) {
-    reasons.push(`线上还出现了 ${extra.join(', ')} 的调用（辅助任务或路由降级，需结合上下文判断）`)
+  for (const model of extra) {
+    const known = KNOWN_AUX[String(model).toLowerCase()]
+    reasons.push(known ? `线上另有 ${model} 的调用：${known}` : `线上还出现了 ${model} 的调用（用途需看抓包确认）`)
+  }
+
+  // What the service said it was, when that differs from the released model id.
+  const trial = (s.servedModels ?? []).filter((m) => /-(trial|preview|experimental)$/i.test(m))
+  if (trial.length > 0) {
+    reasons.push(`服务端以 ${trial.join(', ')} 通道应答（非正式发布通道，与请求的模型不同名）`)
   }
 
   if ((s.wrongFormat ?? 0) > 0) {
